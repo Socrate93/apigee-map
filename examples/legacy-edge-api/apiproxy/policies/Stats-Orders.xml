@@ -1,0 +1,6 @@
+<StatisticsCollector name="Stats-Orders" enabled="true" continueOnError="true">
+    <Statistics>
+        <Statistic name="partnerId" ref="request.header.x-partner-id" type="string">unknown</Statistic>
+        <Statistic name="orderTotal" ref="order.total" type="float">0</Statistic>
+    </Statistics>
+</StatisticsCollector>

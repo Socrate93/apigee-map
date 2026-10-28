@@ -1,0 +1,6 @@
+<KeyValueMapOperations name="KVM-Get-Token" mapIdentifier="partner-config">
+    <Scope>environment</Scope>
+    <Get assignTo="partner.token">
+        <Key><Parameter>partner.token</Parameter></Key>
+    </Get>
+</KeyValueMapOperations>

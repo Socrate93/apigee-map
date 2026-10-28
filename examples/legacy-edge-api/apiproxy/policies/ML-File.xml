@@ -1,0 +1,6 @@
+<MessageLogging name="ML-File">
+    <File>
+        <Message>{apiproxy.name} {response.status.code}</Message>
+        <FileName>legacy-edge-api.log</FileName>
+    </File>
+</MessageLogging>

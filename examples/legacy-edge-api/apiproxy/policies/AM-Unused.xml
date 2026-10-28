@@ -1,0 +1,3 @@
+<AssignMessage name="AM-Unused">
+    <Set><Payload contentType="text/plain">unused</Payload></Set>
+</AssignMessage>

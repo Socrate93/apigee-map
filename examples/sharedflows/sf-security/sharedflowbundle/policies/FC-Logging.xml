@@ -1,0 +1,3 @@
+<FlowCallout name="FC-Logging">
+    <SharedFlowBundle>sf-logging</SharedFlowBundle>
+</FlowCallout>

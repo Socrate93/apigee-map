@@ -1,0 +1,7 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Error-401">
+    <Set>
+        <Payload contentType="application/json">{"error":"invalid_api_key"}</Payload>
+        <StatusCode>401</StatusCode>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="response"/>
+</AssignMessage>

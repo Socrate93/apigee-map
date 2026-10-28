@@ -1,0 +1,4 @@
+<Javascript async="false" continueOnError="false" enabled="true" timeLimit="200" name="JS-Format">
+    <ResourceURL>jsc://format-order.js</ResourceURL>
+    <IncludeURL>jsc://common-utils.js</IncludeURL>
+</Javascript>

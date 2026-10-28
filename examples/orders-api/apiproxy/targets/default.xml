@@ -1,0 +1,26 @@
+<TargetEndpoint name="default">
+    <PreFlow name="PreFlow">
+        <Request>
+            <Step><Name>AM-Backend-Auth</Name></Step>
+        </Request>
+        <Response/>
+    </PreFlow>
+    <HTTPTargetConnection>
+        <LoadBalancer>
+            <Algorithm>RoundRobin</Algorithm>
+            <Server name="orders-backend-1"/>
+            <Server name="orders-backend-2"/>
+            <Server name="orders-backend-dr">
+                <IsFallback>true</IsFallback>
+            </Server>
+        </LoadBalancer>
+        <Path>/internal/orders</Path>
+        <SSLInfo>
+            <Enabled>true</Enabled>
+            <ClientAuthEnabled>true</ClientAuthEnabled>
+            <KeyStore>ref://orders-keystore-ref</KeyStore>
+            <KeyAlias>orders-client</KeyAlias>
+            <TrustStore>backend-truststore</TrustStore>
+        </SSLInfo>
+    </HTTPTargetConnection>
+</TargetEndpoint>

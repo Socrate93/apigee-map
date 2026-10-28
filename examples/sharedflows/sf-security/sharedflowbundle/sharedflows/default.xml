@@ -1,0 +1,8 @@
+<SharedFlow name="default">
+    <Step><Name>KVM-Get-Secrets</Name></Step>
+    <Step><Name>LC-Token</Name></Step>
+    <Step>
+        <Name>FC-Logging</Name>
+        <Condition>security.debug = true</Condition>
+    </Step>
+</SharedFlow>

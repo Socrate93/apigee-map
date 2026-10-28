@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Runs the CLI from the built jar: ./apigee-map <bundle> [options]
+exec java -jar "$(cd "$(dirname "$0")" && pwd)/target/apigee-map.jar" "$@"

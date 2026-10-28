@@ -1,0 +1,8 @@
+<AssignMessage name="AM-CORS">
+    <Set>
+        <Headers>
+            <Header name="Access-Control-Allow-Origin">*</Header>
+        </Headers>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="response"/>
+</AssignMessage>

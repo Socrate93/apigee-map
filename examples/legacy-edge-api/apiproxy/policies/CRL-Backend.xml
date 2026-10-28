@@ -1,0 +1,5 @@
+<ConcurrentRatelimit name="CRL-Backend">
+    <AllowConnections count="50" ttl="5"/>
+    <Distributed>true</Distributed>
+    <TargetIdentifier name="default"/>
+</ConcurrentRatelimit>

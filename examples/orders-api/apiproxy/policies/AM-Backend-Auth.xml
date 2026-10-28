@@ -1,0 +1,8 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Backend-Auth">
+    <Set>
+        <Headers>
+            <Header name="Authorization">Basic {private.backend.password}</Header>
+        </Headers>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="request"/>
+</AssignMessage>

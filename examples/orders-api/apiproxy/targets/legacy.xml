@@ -1,0 +1,5 @@
+<TargetEndpoint name="legacy">
+    <HTTPTargetConnection>
+        <URL>http://legacy-orders.internal:8080/orders</URL>
+    </HTTPTargetConnection>
+</TargetEndpoint>

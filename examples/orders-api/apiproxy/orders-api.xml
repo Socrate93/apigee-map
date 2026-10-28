@@ -1,0 +1,4 @@
+<APIProxy revision="3" name="orders-api">
+    <DisplayName>orders-api</DisplayName>
+    <Description>Orders API exposed to partners</Description>
+</APIProxy>

@@ -1,0 +1,12 @@
+<PopulateCache async="false" continueOnError="false" enabled="true" name="PC-Orders">
+    <CacheResource>orders-cache</CacheResource>
+    <Scope>Exclusive</Scope>
+    <CacheKey>
+        <Prefix>order</Prefix>
+        <KeyFragment ref="proxy.pathsuffix"/>
+    </CacheKey>
+    <ExpirySettings>
+        <TimeoutInSec>600</TimeoutInSec>
+    </ExpirySettings>
+    <Source>response.content</Source>
+</PopulateCache>

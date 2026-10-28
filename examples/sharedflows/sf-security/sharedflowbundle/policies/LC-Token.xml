@@ -1,0 +1,7 @@
+<LookupCache name="LC-Token">
+    <CacheKey>
+        <Prefix>token</Prefix>
+        <KeyFragment ref="request.header.authorization"/>
+    </CacheKey>
+    <AssignTo>cached.token</AssignTo>
+</LookupCache>

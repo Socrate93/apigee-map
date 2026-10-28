@@ -1,0 +1,4 @@
+<SharedFlowBundle revision="2" name="sf-logging">
+    <DisplayName>sf-logging</DisplayName>
+    <Description>Ships access logs to syslog</Description>
+</SharedFlowBundle>

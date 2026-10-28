@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<TargetEndpoint name="default">
+    <PreFlow name="PreFlow">
+        <Request>
+            <Step><Name>CRL-Backend</Name></Step>
+            <Step><Name>AM-Partner-Auth</Name></Step>
+        </Request>
+        <Response/>
+    </PreFlow>
+    <HTTPTargetConnection>
+        <URL>https://inventory.example.com/v2</URL>
+        <SSLInfo>
+            <Enabled>true</Enabled>
+            <Protocols>
+                <Protocol>TLSv1</Protocol>
+                <Protocol>TLSv1.2</Protocol>
+            </Protocols>
+        </SSLInfo>
+    </HTTPTargetConnection>
+</TargetEndpoint>

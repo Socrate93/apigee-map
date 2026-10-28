@@ -1,0 +1,54 @@
+<ProxyEndpoint name="default">
+    <PreFlow name="PreFlow">
+        <Request>
+            <Step><Name>Verify-API-Key</Name></Step>
+            <Step><Name>FC-Security</Name></Step>
+            <Step><Name>Q-Partner</Name></Step>
+        </Request>
+        <Response/>
+    </PreFlow>
+    <Flows>
+        <Flow name="getOrder">
+            <Condition>(proxy.pathsuffix MatchesPath "/*") and (request.verb = "GET")</Condition>
+            <Request>
+                <Step><Name>KVM-Get-Config</Name></Step>
+                <Step><Name>LC-Orders</Name></Step>
+                <Step>
+                    <Name>SC-Customer</Name>
+                    <Condition>lookupcache.LC-Orders.cachehit = false</Condition>
+                </Step>
+            </Request>
+            <Response>
+                <Step><Name>PC-Orders</Name></Step>
+                <Step><Name>JS-Format</Name></Step>
+            </Response>
+        </Flow>
+    </Flows>
+    <PostFlow name="PostFlow">
+        <Request/>
+        <Response/>
+    </PostFlow>
+    <PostClientFlow>
+        <Response>
+            <Step><Name>FC-Logging</Name></Step>
+        </Response>
+    </PostClientFlow>
+    <FaultRules>
+        <FaultRule name="invalid-key">
+            <Condition>fault.name = "InvalidApiKey"</Condition>
+            <Step><Name>AM-Error-401</Name></Step>
+        </FaultRule>
+    </FaultRules>
+    <HTTPProxyConnection>
+        <BasePath>/v1/orders</BasePath>
+        <VirtualHost>secure</VirtualHost>
+        <VirtualHost>partners</VirtualHost>
+    </HTTPProxyConnection>
+    <RouteRule name="legacy">
+        <Condition>request.header.X-Legacy = "true"</Condition>
+        <TargetEndpoint>legacy</TargetEndpoint>
+    </RouteRule>
+    <RouteRule name="default">
+        <TargetEndpoint>default</TargetEndpoint>
+    </RouteRule>
+</ProxyEndpoint>

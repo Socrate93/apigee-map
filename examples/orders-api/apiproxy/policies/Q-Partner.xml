@@ -1,0 +1,5 @@
+<Quota async="false" continueOnError="false" enabled="false" name="Q-Partner">
+    <Allow count="100"/>
+    <Interval>1</Interval>
+    <TimeUnit>minute</TimeUnit>
+</Quota>

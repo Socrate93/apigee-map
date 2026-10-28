@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<APIProxy revision="12" name="legacy-edge-api">
+    <DisplayName>legacy-edge-api</DisplayName>
+    <Description>Legacy partner API with typical Edge for Private Cloud constructs</Description>
+    <Policies>
+        <Policy>AM-CORS</Policy>
+        <Policy>AM-Partner-Auth</Policy>
+        <Policy>AM-Unused</Policy>
+        <Policy>CRL-Backend</Policy>
+        <Policy>JS-Call-Inventory</Policy>
+        <Policy>JS-Set-Flags</Policy>
+        <Policy>KVM-Get-Token</Policy>
+        <Policy>ML-File</Policy>
+        <Policy>Py-Legacy</Policy>
+        <Policy>Stats-Orders</Policy>
+    </Policies>
+</APIProxy>

@@ -1,0 +1,8 @@
+<AssignMessage name="AM-Partner-Auth">
+    <Set>
+        <Headers>
+            <Header name="Authorization">Basic cGFydG5lcjpzM2NyM3Q=</Header>
+        </Headers>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="request"/>
+</AssignMessage>

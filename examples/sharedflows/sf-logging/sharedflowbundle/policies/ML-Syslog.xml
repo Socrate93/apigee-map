@@ -1,0 +1,8 @@
+<MessageLogging name="ML-Syslog">
+    <Syslog>
+        <Message>[{organization.name}] {apiproxy.name} {response.status.code}</Message>
+        <Host>syslog.internal</Host>
+        <Port>514</Port>
+        <Protocol>TCP</Protocol>
+    </Syslog>
+</MessageLogging>

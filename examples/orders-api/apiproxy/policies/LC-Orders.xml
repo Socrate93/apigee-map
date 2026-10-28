@@ -1,0 +1,9 @@
+<LookupCache async="false" continueOnError="false" enabled="true" name="LC-Orders">
+    <CacheResource>orders-cache</CacheResource>
+    <Scope>Exclusive</Scope>
+    <CacheKey>
+        <Prefix>order</Prefix>
+        <KeyFragment ref="proxy.pathsuffix"/>
+    </CacheKey>
+    <AssignTo>cached.order</AssignTo>
+</LookupCache>

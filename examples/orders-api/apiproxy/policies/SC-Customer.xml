@@ -1,0 +1,7 @@
+<ServiceCallout async="false" continueOnError="false" enabled="true" name="SC-Customer">
+    <Request variable="customerRequest"/>
+    <Response>customerResponse</Response>
+    <HTTPTargetConnection>
+        <URL>https://customers.internal/api/customers/{request.queryparam.customerId}</URL>
+    </HTTPTargetConnection>
+</ServiceCallout>

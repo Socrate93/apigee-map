@@ -1,0 +1,6 @@
+<KeyValueMapOperations name="KVM-Legacy-Unused" mapIdentifier="legacy-config">
+    <Scope>apiproxy</Scope>
+    <Get assignTo="legacy.flag">
+        <Key><Parameter>flag</Parameter></Key>
+    </Get>
+</KeyValueMapOperations>
