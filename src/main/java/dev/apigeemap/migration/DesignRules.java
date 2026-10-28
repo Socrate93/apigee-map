@@ -1,5 +1,6 @@
 package dev.apigeemap.migration;
 
+import dev.apigeemap.analysis.ScriptAnalyzer;
 import dev.apigeemap.analysis.Xml;
 import dev.apigeemap.model.BundleReport;
 import dev.apigeemap.model.Policy;
@@ -11,10 +12,17 @@ import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static dev.apigeemap.migration.Finding.Category.DESIGN;
@@ -58,6 +66,27 @@ final class DesignRules {
             Map.entry("XSL", List.of("XSL")),
             Map.entry("CORS", List.of("CORS")));
 
+    /**
+     * First segments of the flow variables Apigee or its policies set ({@code request.header.x},
+     * {@code verifyapikey.VA-Key.client_id}...): scripts may read them without any policy of the bundle setting them.
+     */
+    private static final Set<String> BUILT_IN_VARIABLES = Set.of("request", "response", "message", "proxy",
+            "target", "client", "system", "environment", "organization", "apiproxy", "apiproduct", "application",
+            "app", "developer", "error", "fault", "is", "servicecallout", "ratelimit", "verifyapikey",
+            "oauthv2accesstoken", "oauthv2authcode", "oauthv2refreshtoken", "oauthv2client", "oauthv2", "oauthv1",
+            "jwt", "apigee", "current", "route", "router", "virtualhost", "messageid", "flow", "sharedflow",
+            "loadbalancing", "upstream", "tls", "lookupcache", "populatecache", "responsecache", "invalidatecache",
+            "keyvaluemap", "quota", "spikearrest", "javascript", "javacallout", "raisefault", "jsonattack",
+            "xmlattack", "regularexpressionprotection", "accesstoken", "messagelogging", "analytics", "mint",
+            "sharedflowbundle", "x509", "ssl", "datacapture");
+
+    /** {@code {name}} in ExtractVariables patterns. */
+    private static final Pattern PATTERN_VARIABLE = Pattern.compile("\\{([^}]+)}");
+
+    /** A sequence of steps: a Request/Response phase of an endpoint flow, or the body of a shared flow. */
+    private record Phase(String label, List<String> steps) {
+    }
+
     private DesignRules() {
     }
 
@@ -71,6 +100,13 @@ final class DesignRules {
                 new Rule("DES-04", DESIGN, "No DefaultFaultRule", DesignRules::defaultFaultRule),
                 new Rule("DES-05", DESIGN, "Duplicate policies", DesignRules::duplicatePolicies),
                 new Rule("DES-06", DESIGN, "Policy naming convention", DesignRules::naming),
+                new Rule("DES-08", DESIGN, "Policies that differ by one or two values",
+                        DesignRules::nearDuplicatePolicies),
+                new Rule("DES-09", DESIGN, "Step sequences repeated in several flows", DesignRules::repeatedSequences),
+                new Rule("DES-10", DESIGN, "Duplicated scripts", DesignRules::duplicatedScripts),
+                new Rule("DES-11", DESIGN, "Steps that repeat an available shared flow",
+                        DesignRules::reimplementedSharedFlows),
+                new Rule("DES-12", DESIGN, "Variables read by scripts but set nowhere", DesignRules::unsetVariables),
                 new Rule("DES-07", DESIGN, "Policies attached to no flow are removed", true,
                         DesignRules::unattachedPolicies));
     }
@@ -178,28 +214,289 @@ final class DesignRules {
         }
     }
 
-    /** Same policy type and content in several places of the migration (root bundle only, to report once). */
+    /**
+     * Same policy type and content in several places of the migration (root bundle only, to report once).
+     * Names and DisplayNames are ignored.
+     */
     private static void duplicatePolicies(MigrationContext ctx) throws IOException {
-        if (ctx.sharedFlows.containsKey(ctx.report.name())) return;
-        List<BundleReport> bundles = new ArrayList<>(List.of(ctx.report));
-        bundles.addAll(ctx.sharedFlows.values());
-        Map<String, List<String>> byContent = new LinkedHashMap<>();
-        for (BundleReport bundle : bundles) {
-            for (Policy policy : bundle.policies()) {
-                if (!policy.active() || policy.type().equals("FlowCallout")) continue;
-                String content = Files.readString(Path.of(bundle.path(), policy.file()))
-                        .replaceFirst("\\sname=\"[^\"]*\"", "")
-                        .replaceAll("<\\?xml[^>]*\\?>", "")
-                        .replaceAll("\\s+", "");
-                byContent.computeIfAbsent(policy.type() + content, k -> new ArrayList<>())
-                        .add(bundle.name() + "/" + policy.name());
-            }
-        }
-        for (List<String> copies : byContent.values()) {
+        if (!ctx.isRoot()) return;
+        Map<PolicyShape, List<String>> byShape = new LinkedHashMap<>();
+        shapes(ctx).forEach((label, shape) -> byShape.computeIfAbsent(shape, k -> new ArrayList<>()).add(label));
+        for (List<String> copies : byShape.values()) {
             if (copies.size() < 2) continue;
             ctx.manual(INFO, names(copies), "Identical policies in " + copies.size() + " places",
                     "Keep a single copy (in a shared flow if several bundles need it) so they cannot drift apart.");
         }
+    }
+
+    /** Active policies of the bundle and its shared flows (FlowCallouts aside), as "bundle/policy" → shape. */
+    private static Map<String, PolicyShape> shapes(MigrationContext ctx) throws IOException {
+        Map<String, PolicyShape> shapes = new LinkedHashMap<>();
+        for (BundleReport bundle : ctx.withSharedFlows()) {
+            for (Policy policy : bundle.policies()) {
+                if (!policy.active() || policy.type().equals("FlowCallout")) continue;
+                shapes.put(bundle.name() + "/" + policy.name(),
+                        PolicyShape.of(Xml.parse(Path.of(bundle.path()).resolve(policy.file()))));
+            }
+        }
+        return shapes;
+    }
+
+    /**
+     * Policies with the same structure that differ in one or two values (at most a quarter of them), e.g. the
+     * same AssignMessage with another header value: one policy reading the value from a variable is enough.
+     */
+    private static void nearDuplicatePolicies(MigrationContext ctx) throws IOException {
+        if (!ctx.isRoot()) return;
+        List<Map.Entry<String, PolicyShape>> shapes = new ArrayList<>(shapes(ctx).entrySet());
+        int[] group = new int[shapes.size()];
+        for (int i = 0; i < group.length; i++) group[i] = i;
+        for (int i = 0; i < shapes.size(); i++) {
+            PolicyShape a = shapes.get(i).getValue();
+            for (int j = i + 1; j < shapes.size(); j++) {
+                List<String> differences = a.differences(shapes.get(j).getValue());
+                if (differences == null || differences.isEmpty() || differences.size() > 2) continue;
+                if (a.values().size() < 4 || differences.size() * 4 > a.values().size()) continue;
+                group[find(group, j)] = find(group, i);
+            }
+        }
+        Map<Integer, List<Map.Entry<String, PolicyShape>>> groups = new LinkedHashMap<>();
+        for (int i = 0; i < shapes.size(); i++) {
+            groups.computeIfAbsent(find(group, i), k -> new ArrayList<>()).add(shapes.get(i));
+        }
+        for (List<Map.Entry<String, PolicyShape>> members : groups.values()) {
+            if (members.size() < 2) continue;
+            PolicyShape first = members.get(0).getValue();
+            List<String> differences = new ArrayList<>();
+            for (String path : first.values().keySet()) {
+                Set<String> values = members.stream().map(m -> m.getValue().values().get(path))
+                        .collect(Collectors.toCollection(LinkedHashSet::new));
+                if (values.size() < 2) continue;
+                differences.add(path.substring(first.type().length()).replaceFirst("^/", "") + " ("
+                        + String.join(" / ", values) + ")");
+            }
+            List<String> labels = members.stream().map(Map.Entry::getKey).toList();
+            ctx.manual(INFO, names(labels), first.type() + " policies that differ only in " + names(differences),
+                    "Merge them into one policy that reads the differing value from a flow variable (set earlier in"
+                            + " the flow, or read from a KVM).");
+        }
+    }
+
+    private static int find(int[] group, int i) {
+        while (group[i] != i) i = group[i] = group[group[i]];
+        return i;
+    }
+
+    /** Request/Response phases of the endpoints and the body of shared flows, with their step names. */
+    private static List<Phase> phases(Element root) {
+        String owner = root.getTagName() + " " + Xml.nameOf(root);
+        List<Element> elements = new ArrayList<>(Xml.descendants(root, "Request"));
+        elements.addAll(Xml.descendants(root, "Response"));
+        if (root.getTagName().equals("SharedFlow")) elements.add(root);
+        List<Phase> phases = new ArrayList<>();
+        for (Element element : elements) {
+            List<String> steps = Xml.children(element, "Step").stream()
+                    .map(step -> Xml.text(step, "Name")).filter(name -> name != null).toList();
+            if (steps.isEmpty()) continue;
+            String label = owner;
+            if (element != root && element.getParentNode() instanceof Element flow) {
+                label += " › " + (flow.getTagName().equals("Flow") ? Xml.nameOf(flow) : flow.getTagName())
+                        + " › " + element.getTagName();
+            }
+            phases.add(new Phase(label, steps));
+        }
+        return phases;
+    }
+
+    private static List<Phase> phases(MigrationContext ctx) throws IOException {
+        List<Phase> phases = new ArrayList<>();
+        for (String file : ctx.endpointFiles()) phases.addAll(phases(ctx.workspace.root(file)));
+        return phases;
+    }
+
+    /**
+     * The same run of two or more steps in several phases of the bundle. Only the longest runs are reported:
+     * a run inside a longer one found in the same places adds nothing.
+     */
+    private static void repeatedSequences(MigrationContext ctx) throws IOException {
+        Map<List<String>, Set<String>> places = new LinkedHashMap<>();
+        for (Phase phase : phases(ctx)) {
+            List<String> steps = phase.steps();
+            for (int length = 2; length <= steps.size(); length++) {
+                for (int i = 0; i + length <= steps.size(); i++) {
+                    places.computeIfAbsent(List.copyOf(steps.subList(i, i + length)), k -> new LinkedHashSet<>())
+                            .add(phase.label());
+                }
+            }
+        }
+        places.values().removeIf(where -> where.size() < 2);
+        for (Map.Entry<List<String>, Set<String>> run : places.entrySet()) {
+            List<String> steps = run.getKey();
+            boolean covered = places.entrySet().stream().anyMatch(longer -> longer.getKey().size() > steps.size()
+                    && Collections.indexOfSubList(longer.getKey(), steps) >= 0
+                    && longer.getValue().equals(run.getValue()));
+            if (covered) continue;
+            ctx.manual(INFO, ctx.report.name(), "Steps " + String.join(" › ", steps) + " repeated in "
+                            + run.getValue().size() + " places: " + String.join("; ", run.getValue()),
+                    "Put them once in a shared flow called with a FlowCallout, or in the PreFlow/PostFlow if they"
+                            + " run on every request.");
+        }
+    }
+
+    /**
+     * Scripts of the proxy and its shared flows that are copies (same code once comments and whitespace are
+     * removed) or near copies (80% of their code in common). Scripts under 20 tokens are left out.
+     */
+    private static void duplicatedScripts(MigrationContext ctx) throws IOException {
+        if (!ctx.isRoot()) return;
+        Map<String, List<String>> tokens = new LinkedHashMap<>();
+        for (BundleReport bundle : ctx.withSharedFlows()) {
+            for (Scripts.Script script : Scripts.of(bundle)) {
+                List<String> code = Scripts.tokens(script.source(), script.python());
+                if (code.size() >= 20) tokens.putIfAbsent(script.label(), code);
+            }
+        }
+        Map<List<String>, List<String>> copies = new LinkedHashMap<>();
+        tokens.forEach((label, code) -> copies.computeIfAbsent(code, k -> new ArrayList<>()).add(label));
+        for (List<String> labels : copies.values()) {
+            if (labels.size() < 2) continue;
+            ctx.manual(INFO, names(labels), "Identical scripts in " + labels.size() + " places",
+                    "Keep one copy: one policy (in a shared flow if several bundles need it) or one resource.");
+        }
+        List<List<String>> distinct = new ArrayList<>(copies.keySet());
+        for (int i = 0; i < distinct.size(); i++) {
+            for (int j = i + 1; j < distinct.size(); j++) {
+                double similarity = Scripts.similarity(distinct.get(i), distinct.get(j));
+                if (similarity < 0.8) continue;
+                ctx.manual(INFO, copies.get(distinct.get(i)).get(0) + ", " + copies.get(distinct.get(j)).get(0),
+                        "Scripts with " + Math.round(similarity * 100) + "% of their code in common",
+                        "Move the common code to one script (an IncludeURL library), and pass what differs through"
+                                + " flow variables.");
+            }
+        }
+    }
+
+    /**
+     * Runs of steps doing exactly what an available shared flow does (same policies, names aside), whether the
+     * bundle calls that shared flow elsewhere or not.
+     */
+    private static void reimplementedSharedFlows(MigrationContext ctx) throws IOException {
+        if (ctx.catalog.isEmpty()) return;
+        Map<String, PolicyShape> mine = new LinkedHashMap<>();
+        for (Policy policy : ctx.policies()) mine.put(policy.name(), PolicyShape.of(ctx.xml(policy)));
+        List<Phase> phases = phases(ctx);
+        Path self = Path.of(ctx.report.path()).toAbsolutePath().normalize();
+        for (Map.Entry<Path, String> sharedFlow : ctx.catalog.entrySet()) {
+            if (sharedFlow.getKey().equals(self)) continue;
+            for (List<PolicyShape> body : sharedFlowBodies(sharedFlow.getKey())) {
+                if (body.size() < 2) continue;
+                for (Phase phase : phases) {
+                    List<PolicyShape> steps = phase.steps().stream().map(mine::get).toList();
+                    int start = Collections.indexOfSubList(steps, body);
+                    if (start < 0) continue;
+                    List<String> names = phase.steps().subList(start, start + body.size());
+                    ctx.manual(INFO, phase.label(), "Steps " + String.join(" › ", names)
+                                    + " do what shared flow " + sharedFlow.getValue() + " does",
+                            "Replace them with a FlowCallout to " + sharedFlow.getValue()
+                                    + ", so fixes to the shared flow apply here too.");
+                }
+            }
+        }
+    }
+
+    /** Policies run by each flow of a sharedflowbundle/ folder; flows calling a missing policy are left out. */
+    private static List<List<PolicyShape>> sharedFlowBodies(Path dir) throws IOException {
+        Map<String, PolicyShape> policies = new LinkedHashMap<>();
+        for (Path file : Xml.xmlFiles(dir.resolve("policies"))) {
+            Element root = Xml.parse(file);
+            policies.put(Xml.attr(root, "name"), PolicyShape.of(root));
+        }
+        List<List<PolicyShape>> bodies = new ArrayList<>();
+        for (Path file : Xml.xmlFiles(dir.resolve("sharedflows"))) {
+            List<PolicyShape> body = new ArrayList<>();
+            for (Element step : Xml.children(Xml.parse(file), "Step")) body.add(policies.get(Xml.text(step, "Name")));
+            if (!body.contains(null)) bodies.add(body);
+        }
+        return bodies;
+    }
+
+    /**
+     * Variables scripts read (context.getVariable, flow.getVariable) that no policy or script of the proxy and its
+     * shared flows sets, and that are not Apigee or policy variables: often a typo or a removed policy.
+     */
+    private static void unsetVariables(MigrationContext ctx) throws IOException {
+        if (!ctx.isRoot()) return;
+        Set<String> written = new HashSet<>();
+        boolean dynamic = false;
+        boolean java = false;
+        Map<Scripts.Script, List<String>> reads = new LinkedHashMap<>();
+        for (BundleReport bundle : ctx.withSharedFlows()) {
+            for (Scripts.Script script : Scripts.of(bundle)) {
+                ScriptAnalyzer.Facts facts = script.facts();
+                if (facts.error() != null) continue;
+                written.addAll(facts.writes());
+                dynamic |= facts.dynamicWrites();
+                reads.put(script, facts.reads());
+            }
+            for (Policy policy : bundle.policies()) {
+                if (!policy.active()) continue;
+                java |= policy.type().equals("JavaCallout");
+                written.addAll(writtenBy(Xml.parse(Path.of(bundle.path()).resolve(policy.file()))));
+            }
+        }
+        String caveat = (dynamic ? " Some scripts set variables with computed names, which this check cannot"
+                + " follow." : "") + (java ? " Java callouts are not inspected." : "");
+        for (Map.Entry<Scripts.Script, List<String>> entry : reads.entrySet()) {
+            Set<String> unset = new TreeSet<>();
+            for (String variable : entry.getValue()) {
+                String first = variable.split("\\.", 2)[0].toLowerCase(Locale.ROOT);
+                boolean set = written.contains(variable) || written.stream().anyMatch(w -> variable.startsWith(w + "."));
+                if (!set && !BUILT_IN_VARIABLES.contains(first)) unset.add(variable);
+            }
+            if (unset.isEmpty()) continue;
+            Scripts.Script script = entry.getKey();
+            ctx.manual(INFO, script.policy() + " (" + script.label() + ")", "Reads " + names(unset)
+                            + ", which no policy of the proxy or its shared flows sets",
+                    "Check the names (a typo reads as null) and which policy should set them." + caveat);
+        }
+    }
+
+    /** Flow variables a policy sets: assignTo, AssignTo, OutputVariable, AssignVariable, ExtractVariables... */
+    private static Set<String> writtenBy(Element policy) {
+        Set<String> names = new HashSet<>();
+        for (Element element : Xml.descendants(policy, "*")) {
+            String assignTo = Xml.attr(element, "assignTo");
+            if (assignTo != null) names.add(assignTo);
+            switch (element.getTagName()) {
+                case "AssignTo", "OutputVariable" -> add(names, Xml.text(element));
+                case "AssignVariable" -> add(names, Xml.text(element, "Name"));
+                default -> {
+                }
+            }
+        }
+        switch (policy.getTagName()) {
+            case "ServiceCallout" -> {
+                add(names, Xml.text(policy, "Response"));
+                add(names, Xml.attr(Xml.path(policy, "Request"), "variable"));
+            }
+            case "ExtractVariables" -> {
+                String prefix = Xml.text(policy, "VariablePrefix");
+                Set<String> extracted = new HashSet<>();
+                for (Element variable : Xml.descendants(policy, "Variable")) add(extracted, Xml.attr(variable, "name"));
+                for (Element pattern : Xml.descendants(policy, "Pattern")) {
+                    Matcher matcher = PATTERN_VARIABLE.matcher(String.valueOf(Xml.text(pattern)));
+                    while (matcher.find()) extracted.add(matcher.group(1));
+                }
+                extracted.forEach(name -> names.add(prefix == null ? name : prefix + "." + name));
+            }
+            default -> {
+            }
+        }
+        return names;
+    }
+
+    private static void add(Set<String> names, String name) {
+        if (name != null) names.add(name);
     }
 
     static Map<String, List<String>> defaultPrefixes() {

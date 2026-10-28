@@ -11,6 +11,10 @@ JAVA_HOME=~/Library/Java/JavaVirtualMachines/openjdk-21.0.2/Contents/Home mvn pa
 
 Hors VPN, passer un `settings.xml` vide (`-s empty-settings.xml`) pour résoudre depuis Maven Central.
 
+Seule dépendance : **Mozilla Rhino** (`org.mozilla:rhino`, Maven Central), le moteur JavaScript d'Apigee, utilisé pour
+analyser les scripts des policies `Javascript`. Il est embarqué dans `target/apigee-map.jar` (maven-shade-plugin) :
+le jar se lance toujours seul avec `java -jar`.
+
 ## Utilisation
 
 ```bash
@@ -34,7 +38,7 @@ Exemple fourni : `./apigee-map examples/orders-api -s examples/sharedflows`.
 | Virtual hosts | `ProxyEndpoint/HTTPProxyConnection/VirtualHost` (absence = tous les vhosts de l'env) |
 | Shared flows | `FlowCallout/SharedFlowBundle`, suivis récursivement (détection de cycles) |
 | Target servers | `LoadBalancer/Server` (TargetEndpoint et ServiceCallout), algorithme, fallback |
-| URLs | `HTTPTargetConnection/URL`, `RouteRule/URL` (en dur ou dynamiques) |
+| URLs | `HTTPTargetConnection/URL`, `RouteRule/URL` (en dur ou dynamiques), appels `httpClient` / `new Request(...)` des JavaScript |
 | Proxy chaining | `LocalTargetConnection` (`APIProxy`/`ProxyEndpoint` ou `Path`) |
 | KVM | `KeyValueMapOperations` : map, scope (défaut `environment`), opérations, clés, chiffré (`private.`) |
 | Caches | `LookupCache`, `PopulateCache`, `InvalidateCache`, `ResponseCache` : ressource (ou cache partagé par défaut), scope, clé, TTL |
@@ -57,7 +61,7 @@ java -jar target/apigee-map.jar ui                    # ouvre http://127.0.0.1:8
 java -jar target/apigee-map.jar ui --port 9000 --no-browser --settings ./settings.json
 ```
 
-Le serveur est inclus dans le jar (aucune dépendance) et n'écoute que sur `127.0.0.1` : l'interface n'est pas
+Le serveur est inclus dans le jar (JDK uniquement) et n'écoute que sur `127.0.0.1` : l'interface n'est pas
 joignable depuis le réseau et rien ne sort du poste (sauf Mermaid, chargé depuis un CDN pour dessiner le graphe de
 dépendances).
 
@@ -96,9 +100,11 @@ Exemples : `./apigee-map migrate examples/orders-api -s examples/sharedflows` et
 | HYB-05 | `MessageLogging` vers fichier local | manuelle (Syslog / CloudLogging) |
 | HYB-06 | Ressource `jsc://`… hors du bundle (pas de ressources d'organisation dans hybrid) | manuelle |
 | HYB-07 | Keystore / truststore nommé directement plutôt que via une référence | manuelle |
-| HYB-08 | Backend ou ServiceCallout sur `localhost` / `127.0.0.1` | manuelle |
+| HYB-08 | Backend, ServiceCallout ou appel `httpClient` sur `localhost` / `127.0.0.1` | manuelle |
 | HYB-09 | JSONPath d'ExtractVariables à retester (moteur JSONPath plus récent dans hybrid) | manuelle |
 | HYB-10 | Plusieurs ProxyEndpoints (erreur au-delà de 10) | manuelle |
+| HYB-11 | Variables `virtualhost.*` (conditions, templates, JavaScript) : pas de virtual hosts dans hybrid | manuelle |
+| HYB-12 | JavaScript que Rhino ne sait pas parser | manuelle |
 | SEC-01 | Aucune authentification dans le proxy ni ses shared flows | manuelle |
 | SEC-02 | Aucune protection contre les payloads malveillants | manuelle |
 | SEC-03 | Secrets en clair (AssignMessage, JS, InitialEntries de KVM, URL) | manuelle |
@@ -115,9 +121,14 @@ Exemples : `./apigee-map migrate examples/orders-api -s examples/sharedflows` et
 | DES-02 | Policy désactivée mais toujours attachée | manuelle |
 | DES-03 | Même condition répétée sur ≥ 3 steps | manuelle (flow conditionnel) |
 | DES-04 | Pas de `DefaultFaultRule` | manuelle |
-| DES-05 | Policies identiques entre le proxy et ses shared flows | manuelle |
+| DES-05 | Policies identiques entre le proxy et ses shared flows (nom et DisplayName ignorés) | manuelle |
 | DES-06 | Nom de policy sans préfixe de type (`AM-`, `KVM-`…) | manuelle |
 | DES-07 | Policy attachée à aucun flow | **auto** : supprimée (et retirée du descripteur) |
+| DES-08 | Policies du même type qui ne diffèrent que par 1 ou 2 valeurs (proxy + shared flows) | manuelle (une policy paramétrée) |
+| DES-09 | Même suite de steps répétée dans plusieurs flows | manuelle (shared flow ou PreFlow) |
+| DES-10 | Scripts JS/Python identiques (hors commentaires) ou similaires à 80 % | manuelle |
+| DES-11 | Suite de steps qui refait un shared flow disponible (dossiers `-s`) | manuelle (FlowCallout) |
+| DES-12 | Variable lue par un script mais posée par aucune policy du proxy ni de ses shared flows | manuelle |
 
 Le rapport liste aussi **ce qu'il faut créer côté hybrid** : KVM (avec clés et scope), target servers, caches,
 keystores / références, data collectors, ressources d'environnement, shared flows à déployer, hostnames

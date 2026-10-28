@@ -134,7 +134,7 @@ final class UiService {
     List<ProxySummary> proxies() throws IOException {
         Settings s = settings();
         SharedFlowRepository repository = repository(s);
-        Migrator migrator = new Migrator(s.migrationOptions());
+        Migrator migrator = new Migrator(s.migrationOptions(), repository);
         List<ProxySummary> result = new ArrayList<>();
         for (Path dir : proxyDirs(s)) {
             String id = id(s, dir);
@@ -152,7 +152,7 @@ final class UiService {
     ProxyDetail proxy(String id) throws IOException {
         Settings s = settings();
         BundleReport analysis = analyze(s, id);
-        MigrationReport migration = new Migrator(s.migrationOptions()).migrate(analysis, null);
+        MigrationReport migration = migrator(s).migrate(analysis, null);
         return new ProxyDetail(summary(s, id, analysis, migration), analysis.path(), analysis.policies().size(),
                 analysis.dependencies().size(), output(s, analysis.name()).map(Path::toString).orElse(null),
                 migration);
@@ -164,7 +164,7 @@ final class UiService {
 
     String migrationHtml(String id) throws IOException {
         Settings s = settings();
-        return new MigrationHtmlRenderer().render(new Migrator(s.migrationOptions()).migrate(analyze(s, id), null));
+        return new MigrationHtmlRenderer().render(migrator(s).migrate(analyze(s, id), null));
     }
 
     /**
@@ -182,7 +182,7 @@ final class UiService {
             }
             deleteTree(target);
         }
-        return new Migrator(s.migrationOptions()).migrate(analysis, target);
+        return migrator(s).migrate(analysis, target);
     }
 
     Overview overview() throws IOException {
@@ -192,7 +192,7 @@ final class UiService {
         Map<String, ResourceNeed> resources = new TreeMap<>();
         Settings s = settings();
         SharedFlowRepository repository = repository(s);
-        Migrator migrator = new Migrator(s.migrationOptions());
+        Migrator migrator = new Migrator(s.migrationOptions(), repository);
         int failed = 0;
         for (Path dir : proxyDirs(s)) {
             String id = id(s, dir);
@@ -290,6 +290,10 @@ final class UiService {
         Path root = Path.of(s.proxiesRoot()).toAbsolutePath().normalize();
         String id = Xml.relativePath(root, dir);
         return id.isEmpty() ? "." : id;
+    }
+
+    private static Migrator migrator(Settings s) throws IOException {
+        return new Migrator(s.migrationOptions(), repository(s));
     }
 
     private static SharedFlowRepository repository(Settings s) throws IOException {

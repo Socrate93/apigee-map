@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ExtractVariables name="EV-Path">
+    <Source>request</Source>
+    <URIPath>
+        <Pattern ignoreCase="true">/{orderId}</Pattern>
+    </URIPath>
+</ExtractVariables>

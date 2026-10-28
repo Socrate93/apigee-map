@@ -8,6 +8,7 @@ import dev.apigeemap.model.SharedFlowLink;
 import org.w3c.dom.Element;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -25,6 +26,8 @@ final class MigrationContext {
     final BundleWorkspace workspace;
     /** Every resolved shared flow reachable from the migrated root bundle, by name. */
     final Map<String, BundleReport> sharedFlows;
+    /** Every shared flow available locally (called or not): sharedflowbundle/ folder → name. */
+    final Map<Path, String> catalog;
     final MigrationOptions options;
 
     private final Map<String, EnvResource> resources;
@@ -33,11 +36,12 @@ final class MigrationContext {
     private Rule rule;
 
     MigrationContext(BundleReport report, BundleWorkspace workspace, Map<String, BundleReport> sharedFlows,
-                     MigrationOptions options, Map<String, EnvResource> resources,
+                     Map<Path, String> catalog, MigrationOptions options, Map<String, EnvResource> resources,
                      Map<String, NewTargetServer> targetServers) {
         this.report = report;
         this.workspace = workspace;
         this.sharedFlows = sharedFlows;
+        this.catalog = catalog;
         this.options = options;
         this.resources = resources;
         this.targetServers = targetServers;
@@ -46,6 +50,18 @@ final class MigrationContext {
     void run(Rule rule) throws IOException {
         this.rule = rule;
         rule.check().run(this);
+    }
+
+    /** The root bundle of the migration (rules comparing it with its shared flows run there only). */
+    boolean isRoot() {
+        return !sharedFlows.containsKey(report.name());
+    }
+
+    /** This bundle, then every shared flow it reaches. */
+    List<BundleReport> withSharedFlows() {
+        List<BundleReport> bundles = new ArrayList<>(List.of(report));
+        bundles.addAll(reachable(report));
+        return bundles;
     }
 
     boolean isProxy() {

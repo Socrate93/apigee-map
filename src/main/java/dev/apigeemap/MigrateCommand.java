@@ -4,6 +4,7 @@ import dev.apigeemap.analysis.BundleAnalyzer;
 import dev.apigeemap.analysis.BundleLocator;
 import dev.apigeemap.analysis.SharedFlowRepository;
 import dev.apigeemap.migration.MigrationReport;
+import dev.apigeemap.migration.MigrationOptions;
 import dev.apigeemap.migration.Migrator;
 import dev.apigeemap.model.BundleReport;
 import dev.apigeemap.render.MigrationHtmlRenderer;
@@ -85,7 +86,7 @@ final class MigrateCommand {
                     ? SharedFlowRepository.empty()
                     : SharedFlowRepository.scan(sharedFlowDirs);
             BundleReport analysis = new BundleAnalyzer(repository).analyze(bundle);
-            MigrationReport report = new Migrator().migrate(analysis, outDir);
+            MigrationReport report = new Migrator(MigrationOptions.DEFAULT, repository).migrate(analysis, outDir);
             String rendered = format.equals("html")
                     ? new MigrationHtmlRenderer().render(report)
                     : new MigrationTextRenderer().render(report);

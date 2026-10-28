@@ -1,5 +1,6 @@
 package dev.apigeemap.migration;
 
+import dev.apigeemap.analysis.SharedFlowRepository;
 import dev.apigeemap.model.BundleReport;
 import dev.apigeemap.model.BundleType;
 import dev.apigeemap.model.Dependency;
@@ -27,13 +28,20 @@ public final class Migrator {
             DesignRules.all()).flatMap(List::stream).toList();
 
     private final MigrationOptions options;
+    private final SharedFlowRepository catalog;
 
     public Migrator() {
         this(MigrationOptions.DEFAULT);
     }
 
     public Migrator(MigrationOptions options) {
+        this(options, SharedFlowRepository.empty());
+    }
+
+    /** @param catalog shared flows available locally, to spot proxies that repeat what one of them does */
+    public Migrator(MigrationOptions options, SharedFlowRepository catalog) {
         this.options = options;
+        this.catalog = catalog;
     }
 
     public static List<RuleInfo> rules() {
@@ -60,8 +68,8 @@ public final class Migrator {
         List<BundleMigration> results = new ArrayList<>();
         for (BundleReport bundle : bundles) {
             BundleWorkspace workspace = new BundleWorkspace(Path.of(bundle.path()));
-            MigrationContext ctx = new MigrationContext(bundle, workspace, sharedFlows, options, resources,
-                    targetServers);
+            MigrationContext ctx = new MigrationContext(bundle, workspace, sharedFlows, catalog.bundles(), options,
+                    resources, targetServers);
             for (Rule rule : RULES) {
                 if (!options.disabledRules().contains(rule.id())) ctx.run(rule);
             }

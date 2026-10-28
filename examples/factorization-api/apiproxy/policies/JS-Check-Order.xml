@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Javascript name="JS-Check-Order" timeLimit="200">
+    <ResourceURL>jsc://check-order.js</ResourceURL>
+</Javascript>

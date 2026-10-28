@@ -1,5 +1,6 @@
 package dev.apigeemap.migration;
 
+import dev.apigeemap.analysis.ScriptAnalyzer;
 import dev.apigeemap.analysis.Xml;
 import dev.apigeemap.model.Attachment;
 import dev.apigeemap.model.BundleReport;
@@ -94,11 +95,16 @@ final class PerformanceRules {
         return null;
     }
 
+    /** Read from the syntax tree, so calls in comments do not count; a text search when the script does not parse. */
     private static void blockingHttpClient(MigrationContext ctx) throws IOException {
-        for (Policy policy : ctx.policies("Javascript")) {
-            String script = script(ctx, policy);
-            if (script == null || !script.contains("httpClient") || !script.contains("waitForComplete")) continue;
-            ctx.manual(WARN, policy.name(), "JavaScript calls httpClient and blocks on waitForComplete()",
+        Set<String> reported = new HashSet<>();
+        for (Scripts.Script script : Scripts.of(ctx.report)) {
+            if (script.python()) continue;
+            ScriptAnalyzer.Facts facts = script.facts();
+            boolean blocking = facts.error() == null ? facts.httpClient() && facts.waits()
+                    : script.source().contains("httpClient") && script.source().contains("waitForComplete");
+            if (!blocking || !reported.add(script.policy())) continue;
+            ctx.manual(WARN, script.policy(), "JavaScript calls httpClient and blocks on waitForComplete()",
                     "Use a ServiceCallout, or the callback form of httpClient.send without waitForComplete().");
         }
     }

@@ -1,5 +1,6 @@
 package dev.apigeemap.migration;
 
+import dev.apigeemap.analysis.ScriptAnalyzer;
 import dev.apigeemap.analysis.Xml;
 import dev.apigeemap.model.Dependency;
 import dev.apigeemap.model.DependencyKind;
@@ -10,8 +11,10 @@ import org.w3c.dom.Element;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -37,6 +40,9 @@ final class HybridRules {
             "ConnectorCallout", "Edge extensions do not exist in hybrid: call the Google service directly from a"
                     + " ServiceCallout or TargetEndpoint, authenticated with a Google access token.");
 
+    /** virtualhost.name, virtualhost.aliases... outside of words, so {@code <VirtualHost>} never matches. */
+    private static final Pattern VIRTUALHOST_VARIABLE = Pattern.compile("(?<![\\w.])virtualhost\\.[A-Za-z_][\\w.]*");
+
     /** Apigee X and hybrid limit, also used by Google's migration assessment tool. */
     static final int MAX_PROXY_ENDPOINTS = 10;
 
@@ -60,7 +66,9 @@ final class HybridRules {
                         HybridRules::directKeystores),
                 new Rule("HYB-08", HYBRID, "Backend on localhost", HybridRules::localhostBackends),
                 new Rule("HYB-09", HYBRID, "JSONPath expressions to retest", HybridRules::jsonPath),
-                new Rule("HYB-10", HYBRID, "Several ProxyEndpoints", HybridRules::proxyEndpoints));
+                new Rule("HYB-10", HYBRID, "Several ProxyEndpoints", HybridRules::proxyEndpoints),
+                new Rule("HYB-11", HYBRID, "virtualhost.* flow variables", HybridRules::virtualHostVariables),
+                new Rule("HYB-12", HYBRID, "JavaScript that does not parse", HybridRules::unparsableScripts));
     }
 
     /** StatisticsCollector → DataCapture, one data collector per statistic. */
@@ -211,6 +219,12 @@ final class HybridRules {
             if (policy.attached() && isLocal(url)) ctx.manual(ERROR, policy.name(),
                     "Callout URL " + url + " points to the local host", action);
         }
+        for (Scripts.Script script : Scripts.of(ctx.report)) {
+            for (String url : script.facts().urls()) {
+                if (isLocal(url)) ctx.manual(ERROR, script.policy(),
+                        "JavaScript " + script.file() + " calls " + url + ", which points to the local host", action);
+            }
+        }
     }
 
     static boolean isLocal(String url) {
@@ -251,6 +265,53 @@ final class HybridRules {
         } else if (basePaths.size() > 1) {
             ctx.manual(INFO, ctx.report.name(), basePaths.size() + " ProxyEndpoints: " + names(basePaths),
                     "Consider one proxy per base path: proxies deploy, version and scale independently.");
+        }
+    }
+
+    /**
+     * virtualhost.* variables describe the Edge virtual host that received the request; hybrid has environment
+     * groups instead, so these variables are empty or different there.
+     */
+    private static void virtualHostVariables(MigrationContext ctx) throws IOException {
+        String action = "Use request.header.host, environment.name or a value from a KVM instead: Apigee hybrid"
+                + " has environment groups, not virtual hosts.";
+        for (Policy policy : ctx.policies()) {
+            Set<String> variables = virtualHostVariables(ctx.workspace.read(policy.file()));
+            if (policy.attached() && !variables.isEmpty()) {
+                ctx.manual(WARN, policy.name(), "Uses " + names(variables), action);
+            }
+        }
+        for (String file : ctx.endpointFiles()) {
+            Set<String> variables = virtualHostVariables(ctx.workspace.read(file));
+            Element root = ctx.workspace.root(file);
+            if (!variables.isEmpty()) {
+                ctx.manual(WARN, root.getTagName() + " " + Xml.nameOf(root), "Uses " + names(variables), action);
+            }
+        }
+        for (Scripts.Script script : Scripts.of(ctx.report)) {
+            List<String> variables = script.facts().reads().stream().filter(v -> v.startsWith("virtualhost.")).toList();
+            if (!variables.isEmpty()) {
+                ctx.manual(WARN, script.policy(), script.file() + " reads " + names(variables), action);
+            }
+        }
+    }
+
+    private static Set<String> virtualHostVariables(String text) {
+        Set<String> variables = new LinkedHashSet<>();
+        Matcher matcher = VIRTUALHOST_VARIABLE.matcher(text);
+        while (matcher.find()) variables.add(matcher.group());
+        return variables;
+    }
+
+    /** Scripts Rhino rejects: Apigee runs JavaScript on Rhino, and the other script checks cannot read them. */
+    private static void unparsableScripts(MigrationContext ctx) throws IOException {
+        for (Scripts.Script script : Scripts.of(ctx.report)) {
+            if (script.python()) continue;
+            ScriptAnalyzer.Facts facts = script.facts();
+            if (facts.error() == null) continue;
+            ctx.manual(WARN, script.policy(), "JavaScript " + script.file() + " does not parse (" + facts.error() + ")",
+                    "Fix the syntax: Apigee runs JavaScript on Rhino too, so the policy can fail at deployment or at"
+                            + " runtime. The other script checks skipped this file.");
         }
     }
 

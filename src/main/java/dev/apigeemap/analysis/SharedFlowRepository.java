@@ -56,6 +56,13 @@ public final class SharedFlowRepository {
         return byName.isEmpty();
     }
 
+    /** Every indexed sharedflowbundle/ folder, with its declared (or folder) name. */
+    public Map<Path, String> bundles() {
+        Map<Path, String> bundles = new LinkedHashMap<>();
+        byName.forEach((name, dir) -> bundles.putIfAbsent(dir, name));
+        return bundles;
+    }
+
     public Optional<Path> find(String name) {
         return Optional.ofNullable(byName.get(name));
     }

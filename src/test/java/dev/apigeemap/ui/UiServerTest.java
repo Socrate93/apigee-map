@@ -54,7 +54,7 @@ class UiServerTest {
     @Test
     void listsProxiesWithTheirFindings() throws Exception {
         List<?> proxies = (List<?>) Json.parse(get("/api/proxies").body());
-        assertEquals(3, proxies.size());
+        assertEquals(4, proxies.size());
         Map<?, ?> orders = proxies.stream().map(p -> (Map<?, ?>) p)
                 .filter(p -> p.get("id").equals("orders-api")).findFirst().orElseThrow();
         assertEquals(2.0, orders.get("sharedFlows"));
@@ -87,7 +87,7 @@ class UiServerTest {
     @Test
     void savesSettingsThatChangeTheMigration() throws Exception {
         Map<?, ?> payload = (Map<?, ?>) Json.parse(get("/api/settings").body());
-        assertEquals(29, ((List<?>) payload.get("rules")).size());
+        assertEquals(36, ((List<?>) payload.get("rules")).size());
         assertTrue(((Map<?, ?>) payload.get("defaultNamingPrefixes")).containsKey("AssignMessage"));
 
         String body = Json.write(Map.of(

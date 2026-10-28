@@ -6,6 +6,7 @@ import dev.apigeemap.analysis.SharedFlowRepository;
 import dev.apigeemap.migration.BundleMigration;
 import dev.apigeemap.migration.FileChange;
 import dev.apigeemap.migration.Finding;
+import dev.apigeemap.migration.MigrationOptions;
 import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.migration.Migrator;
 import dev.apigeemap.model.BundleReport;
@@ -34,6 +35,7 @@ class MigratorTest {
     private static final Path LEGACY = Path.of("examples/legacy-edge-api");
     private static final Path SHARED_FLOWS = Path.of("examples/sharedflows");
     private static final Path ANTI_PATTERNS = Path.of("examples/edge-antipatterns-api");
+    private static final Path FACTORIZATION = Path.of("examples/factorization-api");
 
     @TempDir
     Path tmp;
@@ -178,6 +180,46 @@ class MigratorTest {
         assertTrue(find(report, "HYB-10").message().startsWith("12 ProxyEndpoints, above the limit of 10"));
         assertManual(report, "HYB-10", Issue.Severity.ERROR, "edge-antipatterns-api");
         assertManual(report, "HYB-04", Issue.Severity.WARN, "resources/hosted");
+    }
+
+    @Test
+    void findsWhatToFactorize() throws IOException {
+        MigrationReport report = new Migrator(MigrationOptions.DEFAULT, SharedFlowRepository.scan(List.of(SHARED_FLOWS)))
+                .migrate(analyze(FACTORIZATION, true), null);
+        Finding near = find(report, "DES-08");
+        assertEquals("factorization-api/AM-Header-Customers, factorization-api/AM-Header-Orders", near.location());
+        assertTrue(near.message().contains("Set/Headers/Header[1] (customers / orders)"), near.message());
+        assertTrue(find(report, "DES-09").message().startsWith("Steps EV-Path › JS-Check-Order repeated in 3 places"));
+        assertEquals(1, report.findings().stream().filter(f -> f.rule().equals("DES-09")).count(),
+                "shorter runs inside a reported one are not repeated");
+        assertTrue(report.findings().stream().anyMatch(f -> f.rule().equals("DES-10")
+                && f.message().equals("Identical scripts in 2 places") && f.location().contains("audit-copy.js")),
+                "comments and whitespace are ignored");
+        assertTrue(report.findings().stream().anyMatch(f -> f.rule().equals("DES-10")
+                && f.message().matches("Scripts with \\d+% of their code in common")
+                && f.location().contains("check-order-admin.js")));
+        Finding sharedFlow = find(report, "DES-11");
+        assertEquals("ProxyEndpoint default › PreFlow › Request", sharedFlow.location());
+        assertTrue(sharedFlow.message().contains("AM-Cors-Origin › AM-Cors-Methods do what shared flow sf-cors does"));
+        Finding unset = find(report, "DES-12");
+        assertTrue(unset.message().startsWith("Reads order.status, order.total,"), unset.message());
+        assertTrue(report.findings().stream().noneMatch(f -> f.rule().equals("DES-12")
+                && f.message().contains("orderId")), "orderId is set by EV-Path");
+
+        assertManual(report, "HYB-08", Issue.Severity.ERROR, "JS-Audit");
+        assertManual(report, "HYB-11", Issue.Severity.WARN, "ProxyEndpoint default");
+        assertManual(report, "HYB-11", Issue.Severity.WARN, "JS-Audit");
+        assertTrue(find(report, "HYB-12").message().contains("(line 2: missing ) after condition)"));
+    }
+
+    @Test
+    void factorizationRulesStayQuietOnTheOtherExamples() throws IOException {
+        SharedFlowRepository catalog = SharedFlowRepository.scan(List.of(SHARED_FLOWS));
+        for (Path bundle : List.of(ORDERS, LEGACY, ANTI_PATTERNS)) {
+            MigrationReport report = new Migrator(MigrationOptions.DEFAULT, catalog).migrate(analyze(bundle, true), null);
+            assertTrue(report.findings().stream().noneMatch(f -> f.rule().matches("DES-(0[89]|1[0-2])|HYB-1[12]")),
+                    bundle + ": " + report.findings().stream().map(Finding::rule).toList());
+        }
     }
 
     /** Bundles checked out on Windows (git autocrlf) use CRLF: changed files keep it, paths still use /. */

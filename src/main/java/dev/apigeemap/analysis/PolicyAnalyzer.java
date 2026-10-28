@@ -2,6 +2,7 @@ package dev.apigeemap.analysis;
 
 import org.w3c.dom.Element;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -18,6 +19,7 @@ import static dev.apigeemap.model.DependencyKind.KVM;
 import static dev.apigeemap.model.DependencyKind.RESOURCE;
 import static dev.apigeemap.model.DependencyKind.SHARED_FLOW;
 import static dev.apigeemap.model.DependencyKind.SYSLOG;
+import static dev.apigeemap.model.DependencyKind.TARGET_URL;
 import static dev.apigeemap.model.Issue.Severity.ERROR;
 import static dev.apigeemap.model.Issue.Severity.INFO;
 import static dev.apigeemap.model.Issue.Severity.WARN;
@@ -40,7 +42,11 @@ final class PolicyAnalyzer {
             case "KeyValueMapOperations" -> kvm(policy, origin, ctx);
             case "LookupCache", "PopulateCache", "InvalidateCache", "ResponseCache" -> cache(policy, origin, ctx);
             case "ServiceCallout" -> serviceCallout(policy, origin, ctx);
-            case "Javascript", "JavaCallout", "XSL", "Script" -> resources(policy, origin, ctx);
+            case "Javascript" -> {
+                resources(policy, origin, ctx);
+                javascript(policy, origin, ctx);
+            }
+            case "JavaCallout", "XSL", "Script" -> resources(policy, origin, ctx);
             case "MessageLogging" -> messageLogging(policy, origin, ctx);
             case "AssignMessage" -> assignMessage(policy, origin, ctx);
             default -> {
@@ -128,6 +134,25 @@ final class PolicyAnalyzer {
             String value = Xml.text(url);
             if (value != null) resource(value, origin, ctx);
         }
+    }
+
+    /** URLs the scripts call through httpClient; scripts Rhino cannot parse are reported. */
+    private static void javascript(Element policy, Origin origin, BundleContext ctx) {
+        Map<String, String> scripts;
+        try {
+            scripts = ScriptAnalyzer.scripts(ctx.dir, policy);
+        } catch (IOException e) {
+            ctx.issue(WARN, "Cannot read the scripts of " + origin.name() + ": " + e.getMessage());
+            return;
+        }
+        scripts.forEach((file, source) -> {
+            ScriptAnalyzer.Facts facts = ScriptAnalyzer.analyze(source, file);
+            if (facts.error() != null) {
+                ctx.issue(WARN, "JavaScript " + file + " (used by " + origin.name() + ") cannot be parsed: "
+                        + facts.error());
+            }
+            for (String url : facts.urls()) ctx.deps.add(TARGET_URL, url, origin.usage(Map.of("via", "httpClient")));
+        });
     }
 
     /** {@code jsc://file.js}: looked up in resources/jsc/, otherwise expected at environment/organization level. */

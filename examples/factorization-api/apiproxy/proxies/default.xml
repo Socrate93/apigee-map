@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ProxyEndpoint name="default">
+    <PreFlow name="PreFlow">
+        <Request>
+            <Step><Name>VA-Key</Name></Step>
+            <Step><Name>AM-Cors-Origin</Name></Step>
+            <Step><Name>AM-Cors-Methods</Name></Step>
+        </Request>
+    </PreFlow>
+    <Flows>
+        <Flow name="get-order">
+            <Condition>request.verb = "GET"</Condition>
+            <Request>
+                <Step><Name>EV-Path</Name></Step>
+                <Step><Name>JS-Check-Order</Name></Step>
+                <Step><Name>JS-Audit</Name></Step>
+            </Request>
+            <Response>
+                <Step><Name>AM-Header-Orders</Name></Step>
+            </Response>
+        </Flow>
+        <Flow name="update-order">
+            <Condition>request.verb = "PUT"</Condition>
+            <Request>
+                <Step><Name>EV-Path</Name></Step>
+                <Step><Name>JS-Check-Order</Name></Step>
+                <Step><Name>JS-Broken</Name></Step>
+            </Request>
+        </Flow>
+        <Flow name="delete-order">
+            <Condition>request.verb = "DELETE"</Condition>
+            <Request>
+                <Step><Name>EV-Path</Name></Step>
+                <Step><Name>JS-Check-Order</Name></Step>
+                <Step>
+                    <Name>JS-Check-Order-Admin</Name>
+                    <Condition>virtualhost.name = "internal"</Condition>
+                </Step>
+                <Step><Name>JS-Audit-Copy</Name></Step>
+            </Request>
+            <Response>
+                <Step><Name>AM-Header-Customers</Name></Step>
+            </Response>
+        </Flow>
+    </Flows>
+    <HTTPProxyConnection>
+        <BasePath>/orders/v2</BasePath>
+    </HTTPProxyConnection>
+    <RouteRule name="default">
+        <TargetEndpoint>default</TargetEndpoint>
+    </RouteRule>
+</ProxyEndpoint>
