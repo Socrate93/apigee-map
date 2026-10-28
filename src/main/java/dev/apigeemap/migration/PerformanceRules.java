@@ -37,7 +37,9 @@ final class PerformanceRules {
                         PerformanceRules::blockingHttpClient),
                 new Rule("PERF-03", PERFORMANCE, "JavaScript that only assigns constants",
                         PerformanceRules::javascriptForAssignments),
-                new Rule("PERF-04", PERFORMANCE, "Python Script policies", PerformanceRules::pythonScripts));
+                new Rule("PERF-04", PERFORMANCE, "Python Script policies", PerformanceRules::pythonScripts),
+                new Rule("PERF-05", PERFORMANCE, "Quota not distributed or synchronous", PerformanceRules::quotas),
+                new Rule("PERF-06", PERFORMANCE, "Cache entries without expiry", PerformanceRules::cacheExpiry));
     }
 
     /**
@@ -117,6 +119,38 @@ final class PerformanceRules {
             if (!policy.attached()) continue;
             ctx.manual(WARN, policy.name(), "Python Script policy runs on an embedded Jython interpreter",
                     "Rewrite it in JavaScript or as a Java callout: Jython is slow and limited to Python 2 syntax.");
+        }
+    }
+
+    /**
+     * A Quota that is not distributed counts per runtime instance, so the real limit grows with the number of pods;
+     * a synchronous one updates the shared counter on every call, which adds latency.
+     */
+    private static void quotas(MigrationContext ctx) throws IOException {
+        for (Policy policy : ctx.policies("Quota")) {
+            if (!policy.attached()) continue;
+            String distributed = Xml.text(ctx.xml(policy), "Distributed");
+            if (!"true".equalsIgnoreCase(distributed)) {
+                ctx.manual(WARN, policy.name(), "Quota is not distributed: each runtime instance counts on its own",
+                        "Set <Distributed>true</Distributed>, or the effective limit grows with the number of"
+                                + " runtime pods.");
+            }
+            if ("true".equalsIgnoreCase(Xml.text(ctx.xml(policy), "Synchronous"))) {
+                ctx.manual(WARN, policy.name(), "Quota updates its counter synchronously on every call",
+                        "Remove <Synchronous>true</Synchronous> unless the limit must be exact: the default"
+                                + " asynchronous update avoids the extra latency.");
+            }
+        }
+    }
+
+    private static void cacheExpiry(MigrationContext ctx) throws IOException {
+        for (String type : List.of("PopulateCache", "ResponseCache")) {
+            for (Policy policy : ctx.policies(type)) {
+                if (!policy.attached() || Xml.path(ctx.xml(policy), "ExpirySettings") != null) continue;
+                ctx.manual(WARN, policy.name(), type + " has no ExpirySettings",
+                        "Set ExpirySettings (TimeoutInSec, TimeOfDay or ExpiryDate): entries without one stay"
+                                + " until evicted and can serve stale data.");
+            }
         }
     }
 

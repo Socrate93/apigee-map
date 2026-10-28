@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<PopulateCache name="PC-Token">
+    <CacheResource>catalog-cache</CacheResource>
+    <Scope>Exclusive</Scope>
+    <CacheKey><KeyFragment ref="client_id"/></CacheKey>
+    <Source>response.content</Source>
+</PopulateCache>

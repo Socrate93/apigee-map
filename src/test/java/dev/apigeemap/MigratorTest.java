@@ -33,6 +33,7 @@ class MigratorTest {
     private static final Path ORDERS = Path.of("examples/orders-api");
     private static final Path LEGACY = Path.of("examples/legacy-edge-api");
     private static final Path SHARED_FLOWS = Path.of("examples/sharedflows");
+    private static final Path ANTI_PATTERNS = Path.of("examples/edge-antipatterns-api");
 
     @TempDir
     Path tmp;
@@ -138,6 +139,47 @@ class MigratorTest {
         assertTrue(new MigrationHtmlRenderer().render(report).contains("data-filter=\"category=HYBRID\""));
     }
 
+    /** Bundle-level checks of Google's apigee-migration-assessment-tool. */
+    @Test
+    void findsWhatTheAssessmentToolFlags() throws IOException {
+        MigrationReport report = new Migrator().migrate(analyze(ANTI_PATTERNS, false), null);
+        assertManual(report, "HYB-03", Issue.Severity.ERROR, "CC-BigQuery");
+        assertManual(report, "HYB-03", Issue.Severity.ERROR, "OA1-Info");
+        assertManual(report, "HYB-04", Issue.Severity.ERROR, "TargetEndpoint hosted");
+        assertTrue(report.findings().stream().noneMatch(f -> f.location().equals("resources/hosted")),
+                "resources used by a hosted target are covered by the target finding");
+        assertManual(report, "HYB-08", Issue.Severity.ERROR, "TargetEndpoint default");
+        assertManual(report, "HYB-08", Issue.Severity.ERROR, "SC-Local");
+        assertTrue(find(report, "HYB-09").message().contains("$.order.lines[*].sku"));
+        assertManual(report, "HYB-10", Issue.Severity.INFO, "edge-antipatterns-api");
+        assertManual(report, "PERF-05", Issue.Severity.WARN, "Q-Partner");
+        assertTrue(report.findings().stream().anyMatch(f -> f.rule().equals("PERF-05")
+                && f.location().equals("Q-Global") && f.message().contains("synchronously")));
+        assertEquals(1, report.findings().stream().filter(f -> f.rule().equals("PERF-05")
+                && f.location().equals("Q-Global")).count(), "Q-Global is distributed");
+        assertManual(report, "PERF-06", Issue.Severity.WARN, "PC-Token");
+        assertTrue(report.findings().stream().noneMatch(f -> f.rule().equals("PERF-06")
+                && f.location().equals("RC-Catalog")), "RC-Catalog has ExpirySettings");
+    }
+
+    @Test
+    void flagsTooManyProxyEndpointsAndLeftoverHostedResources() throws IOException {
+        Path copy = copy(ANTI_PATTERNS, tmp.resolve("big"));
+        Path proxies = copy.resolve("apiproxy/proxies");
+        for (int i = 1; i <= 10; i++) {
+            Files.writeString(proxies.resolve("v" + i + ".xml"), "<ProxyEndpoint name=\"v" + i + "\">"
+                    + "<HTTPProxyConnection><BasePath>/catalog/v" + i + "</BasePath></HTTPProxyConnection>"
+                    + "<RouteRule name=\"default\"><TargetEndpoint>default</TargetEndpoint></RouteRule>"
+                    + "</ProxyEndpoint>");
+        }
+        Files.delete(copy.resolve("apiproxy/targets/hosted.xml"));
+        MigrationReport report = new Migrator().migrate(new BundleAnalyzer(SharedFlowRepository.empty())
+                .analyze(BundleLocator.locate(copy)), null);
+        assertTrue(find(report, "HYB-10").message().startsWith("12 ProxyEndpoints, above the limit of 10"));
+        assertManual(report, "HYB-10", Issue.Severity.ERROR, "edge-antipatterns-api");
+        assertManual(report, "HYB-04", Issue.Severity.WARN, "resources/hosted");
+    }
+
     /** Bundles checked out on Windows (git autocrlf) use CRLF: changed files keep it, paths still use /. */
     @Test
     void keepsWindowsLineEndingsAndPortablePaths() throws IOException {
@@ -197,6 +239,20 @@ class MigratorTest {
                 ? SharedFlowRepository.scan(List.of(SHARED_FLOWS))
                 : SharedFlowRepository.empty();
         return new BundleAnalyzer(repository).analyze(BundleLocator.locate(bundle));
+    }
+
+    private static Path copy(Path source, Path target) throws IOException {
+        try (Stream<Path> files = Files.walk(source)) {
+            for (Path file : files.toList()) {
+                Path destination = target.resolve(source.relativize(file).toString());
+                if (Files.isDirectory(file)) {
+                    Files.createDirectories(destination);
+                } else {
+                    Files.copy(file, destination);
+                }
+            }
+        }
+        return target;
     }
 
     private static Finding find(MigrationReport report, String rule) {

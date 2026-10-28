@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ResponseCache name="RC-Catalog">
+    <CacheKey><KeyFragment ref="request.uri"/></CacheKey>
+    <ExpirySettings><TimeoutInSec>300</TimeoutInSec></ExpirySettings>
+</ResponseCache>

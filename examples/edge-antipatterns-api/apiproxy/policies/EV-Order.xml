@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ExtractVariables name="EV-Order">
+    <Source>request</Source>
+    <JSONPayload>
+        <Variable name="orderId"><JSONPath>$.order.id</JSONPath></Variable>
+        <Variable name="skus"><JSONPath>$.order.lines[*].sku</JSONPath></Variable>
+    </JSONPayload>
+</ExtractVariables>

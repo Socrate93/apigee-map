@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<APIProxy revision="3" name="edge-antipatterns-api">
+    <DisplayName>edge-antipatterns-api</DisplayName>
+    <Description>Edge constructs flagged by Google's migration assessment tool</Description>
+    <Policies>
+        <Policy>CC-BigQuery</Policy>
+        <Policy>EV-Order</Policy>
+        <Policy>OA1-Info</Policy>
+        <Policy>PC-Token</Policy>
+        <Policy>Q-Global</Policy>
+        <Policy>Q-Partner</Policy>
+        <Policy>RC-Catalog</Policy>
+        <Policy>SC-Local</Policy>
+        <Policy>VA-Key</Policy>
+    </Policies>
+</APIProxy>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ServiceCallout name="SC-Local">
+    <Request variable="stockRequest"/>
+    <Response>stockResponse</Response>
+    <HTTPTargetConnection>
+        <URL>http://127.0.0.1:9000/stock/{request.queryparam.sku}</URL>
+    </HTTPTargetConnection>
+</ServiceCallout>

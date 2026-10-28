@@ -91,11 +91,14 @@ Exemples : `./apigee-map migrate examples/orders-api -s examples/sharedflows` et
 |---|---|---|
 | HYB-01 | `StatisticsCollector` non supporté | **auto** : réécrit en `DataCapture` (+ data collectors à créer) |
 | HYB-02 | `VirtualHost` ignoré par hybrid | **auto** : supprimé (hostnames à porter dans l'environment group) |
-| HYB-03 | `ConcurrentRatelimit`, `Ldap`, `OAuthV1` non supportés | manuelle |
-| HYB-04 | Cible Node.js (`ScriptTarget`) | manuelle |
+| HYB-03 | `ConcurrentRatelimit`, `Ldap`, `OAuthV1`, `GetOAuthV1Info`, `DeleteOAuthV1Info`, `ConnectorCallout` non supportés | manuelle |
+| HYB-04 | Cible Node.js (`ScriptTarget`) ou `HostedTarget`, ressources `node`/`hosted` orphelines | manuelle |
 | HYB-05 | `MessageLogging` vers fichier local | manuelle (Syslog / CloudLogging) |
 | HYB-06 | Ressource `jsc://`… hors du bundle (pas de ressources d'organisation dans hybrid) | manuelle |
 | HYB-07 | Keystore / truststore nommé directement plutôt que via une référence | manuelle |
+| HYB-08 | Backend ou ServiceCallout sur `localhost` / `127.0.0.1` | manuelle |
+| HYB-09 | JSONPath d'ExtractVariables à retester (moteur JSONPath plus récent dans hybrid) | manuelle |
+| HYB-10 | Plusieurs ProxyEndpoints (erreur au-delà de 10) | manuelle |
 | SEC-01 | Aucune authentification dans le proxy ni ses shared flows | manuelle |
 | SEC-02 | Aucune protection contre les payloads malveillants | manuelle |
 | SEC-03 | Secrets en clair (AssignMessage, JS, InitialEntries de KVM, URL) | manuelle |
@@ -106,6 +109,8 @@ Exemples : `./apigee-map migrate examples/orders-api -s examples/sharedflows` et
 | PERF-02 | JavaScript bloquant sur `httpClient` + `waitForComplete()` | manuelle |
 | PERF-03 | JavaScript qui ne fait qu'assigner des constantes (→ AssignMessage) | manuelle |
 | PERF-04 | Policy Python (Jython) | manuelle |
+| PERF-05 | Quota non distribué ou synchrone | manuelle |
+| PERF-06 | `PopulateCache` / `ResponseCache` sans `ExpirySettings` | manuelle |
 | DES-01 | URL en dur dans un TargetEndpoint | **auto** : `LoadBalancer` + TargetServer + `Path` |
 | DES-02 | Policy désactivée mais toujours attachée | manuelle |
 | DES-03 | Même condition répétée sur ≥ 3 steps | manuelle (flow conditionnel) |

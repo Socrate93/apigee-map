@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<GetOAuthV1Info name="OA1-Info">
+    <AccessToken>request.header.oauth_token</AccessToken>
+</GetOAuthV1Info>

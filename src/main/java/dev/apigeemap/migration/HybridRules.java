@@ -10,7 +10,10 @@ import org.w3c.dom.Element;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static dev.apigeemap.migration.Dom.escape;
 import static dev.apigeemap.migration.Finding.Category.HYBRID;
@@ -28,7 +31,18 @@ final class HybridRules {
                     + " hybrid has no concurrent connection limit.",
             "Ldap", "Authenticate against an identity provider (OAuthV2, VerifyJWT) or call an LDAP-backed"
                     + " service through a ServiceCallout.",
-            "OAuthV1", "Move the clients to OAuthV2, VerifyAPIKey or VerifyJWT.");
+            "OAuthV1", "Move the clients to OAuthV2, VerifyAPIKey or VerifyJWT.",
+            "GetOAuthV1Info", "Move the clients to OAuthV2 and read token attributes with GetOAuthV2Info.",
+            "DeleteOAuthV1Info", "Move the clients to OAuthV2 and revoke tokens with DeleteOAuthV2Info.",
+            "ConnectorCallout", "Edge extensions do not exist in hybrid: call the Google service directly from a"
+                    + " ServiceCallout or TargetEndpoint, authenticated with a Google access token.");
+
+    /** Apigee X and hybrid limit, also used by Google's migration assessment tool. */
+    static final int MAX_PROXY_ENDPOINTS = 10;
+
+    /** Host of an http(s) URL, also when the rest of the URL holds {variables}. */
+    private static final Pattern URL_HOST = Pattern.compile("^https?://(\\[[^\\]]+\\]|[^/:?#{}]+)",
+            Pattern.CASE_INSENSITIVE);
 
     private HybridRules() {
     }
@@ -39,11 +53,14 @@ final class HybridRules {
                         HybridRules::statisticsCollector),
                 new Rule("HYB-02", HYBRID, "VirtualHost is ignored by hybrid", true, HybridRules::virtualHosts),
                 new Rule("HYB-03", HYBRID, "Policies not supported by hybrid", HybridRules::unsupportedPolicies),
-                new Rule("HYB-04", HYBRID, "Node.js hosted targets", HybridRules::scriptTargets),
+                new Rule("HYB-04", HYBRID, "Node.js and hosted targets", HybridRules::scriptTargets),
                 new Rule("HYB-05", HYBRID, "MessageLogging to a local file", HybridRules::fileLogging),
                 new Rule("HYB-06", HYBRID, "Resources outside the bundle", HybridRules::externalResources),
                 new Rule("HYB-07", HYBRID, "Keystores and truststores without a reference",
-                        HybridRules::directKeystores));
+                        HybridRules::directKeystores),
+                new Rule("HYB-08", HYBRID, "Backend on localhost", HybridRules::localhostBackends),
+                new Rule("HYB-09", HYBRID, "JSONPath expressions to retest", HybridRules::jsonPath),
+                new Rule("HYB-10", HYBRID, "Several ProxyEndpoints", HybridRules::proxyEndpoints));
     }
 
     /** StatisticsCollector → DataCapture, one data collector per statistic. */
@@ -117,14 +134,27 @@ final class HybridRules {
         }
     }
 
+    /** Node.js (ScriptTarget) and hosted targets, and node/hosted resources no target uses any more. */
     private static void scriptTargets(MigrationContext ctx) throws IOException {
+        boolean targets = false;
         for (String file : ctx.workspace.xmlFiles("targets")) {
             Element root = ctx.workspace.root(file);
-            if (Xml.path(root, "ScriptTarget") == null) continue;
-            ctx.manual(ERROR, "TargetEndpoint " + Xml.nameOf(root),
-                    "Node.js hosted targets (ScriptTarget) are not supported by Apigee hybrid",
+            String kind = Xml.path(root, "ScriptTarget") != null ? "Node.js hosted targets (ScriptTarget)"
+                    : Xml.path(root, "HostedTarget") != null ? "Hosted targets (HostedTarget)" : null;
+            if (kind == null) continue;
+            targets = true;
+            ctx.manual(ERROR, "TargetEndpoint " + Xml.nameOf(root), kind + " are not supported by Apigee hybrid",
                     "Deploy the Node.js application as its own service (Cloud Run, GKE...) and target it through a"
                             + " TargetServer.");
+        }
+        if (targets) return;
+        for (String type : List.of("node", "hosted")) {
+            List<String> files = ctx.workspace.resources(type);
+            if (files.isEmpty()) continue;
+            ctx.manual(WARN, "resources/" + type, files.size() + " " + type
+                            + " resource file(s) that Apigee hybrid does not support",
+                    "No TargetEndpoint uses them: remove them from the bundle, or move the application they hold to"
+                            + " its own service.");
         }
     }
 
@@ -160,6 +190,67 @@ final class HybridRules {
                             + " is named directly",
                     "Create a reference (e.g. " + dependency.name() + "-ref) in each environment and use ref://"
                             + dependency.name() + "-ref, so certificates rotate without redeploying the proxy.");
+        }
+    }
+
+    /**
+     * Backends on localhost: on Edge the message processor host may run them, in hybrid localhost is the runtime
+     * pod. TargetEndpoints and ServiceCallouts, checked before DES-01 moves the URLs to target servers.
+     */
+    private static void localhostBackends(MigrationContext ctx) throws IOException {
+        String action = "Point it to the backend's real hostname (through a TargetServer per environment):"
+                + " in Apigee hybrid localhost is the runtime pod itself.";
+        for (String file : ctx.workspace.xmlFiles("targets")) {
+            Element root = ctx.workspace.root(file);
+            String url = Xml.text(root, "HTTPTargetConnection", "URL");
+            if (isLocal(url)) ctx.manual(ERROR, "TargetEndpoint " + Xml.nameOf(root),
+                    "Backend URL " + url + " points to the local host", action);
+        }
+        for (Policy policy : ctx.policies("ServiceCallout")) {
+            String url = Xml.text(ctx.xml(policy), "HTTPTargetConnection", "URL");
+            if (policy.attached() && isLocal(url)) ctx.manual(ERROR, policy.name(),
+                    "Callout URL " + url + " points to the local host", action);
+        }
+    }
+
+    static boolean isLocal(String url) {
+        if (url == null) return false;
+        Matcher matcher = URL_HOST.matcher(url.trim());
+        if (!matcher.find()) return false;
+        String host = matcher.group(1).toLowerCase(Locale.ROOT);
+        return host.equals("localhost") || host.endsWith(".localhost") || host.startsWith("127.")
+                || host.equals("0.0.0.0") || host.equals("[::1]");
+    }
+
+    /** Edge evaluates JSONPath with an old engine (0.8); hybrid uses Jayway JsonPath 2.x, whose results can differ. */
+    private static void jsonPath(MigrationContext ctx) throws IOException {
+        for (Policy policy : ctx.policies("ExtractVariables")) {
+            if (!policy.attached()) continue;
+            List<String> paths = Xml.descendants(Xml.path(ctx.xml(policy), "JSONPayload"), "JSONPath").stream()
+                    .map(Xml::text).filter(p -> p != null).toList();
+            if (paths.isEmpty()) continue;
+            ctx.manual(WARN, policy.name(), "JSONPath " + names(paths) + " may return different results in hybrid",
+                    "Apigee hybrid uses a newer JSONPath engine than Edge (filters, wildcards and single-item arrays"
+                            + " behave differently). Test each expression against sample payloads after deploying.");
+        }
+    }
+
+    /** Above the limit the proxy cannot be deployed; below it, one base path per proxy is the usual design. */
+    private static void proxyEndpoints(MigrationContext ctx) throws IOException {
+        if (!ctx.isProxy()) return;
+        List<String> basePaths = new ArrayList<>();
+        for (String file : ctx.workspace.xmlFiles("proxies")) {
+            Element root = ctx.workspace.root(file);
+            String basePath = Xml.text(root, "HTTPProxyConnection", "BasePath");
+            basePaths.add(Xml.nameOf(root) + (basePath != null ? " (" + basePath + ")" : ""));
+        }
+        if (basePaths.size() > MAX_PROXY_ENDPOINTS) {
+            ctx.manual(ERROR, ctx.report.name(), basePaths.size() + " ProxyEndpoints, above the limit of "
+                            + MAX_PROXY_ENDPOINTS + " in Apigee hybrid",
+                    "Split the proxy into several proxies, grouping the ProxyEndpoints by base path.");
+        } else if (basePaths.size() > 1) {
+            ctx.manual(INFO, ctx.report.name(), basePaths.size() + " ProxyEndpoints: " + names(basePaths),
+                    "Consider one proxy per base path: proxies deploy, version and scale independently.");
         }
     }
 

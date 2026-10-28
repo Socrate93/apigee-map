@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ProxyEndpoint name="default">
+    <PreFlow name="PreFlow">
+        <Request>
+            <Step><Name>VA-Key</Name></Step>
+            <Step><Name>Q-Partner</Name></Step>
+            <Step><Name>Q-Global</Name></Step>
+            <Step><Name>EV-Order</Name></Step>
+            <Step><Name>RC-Catalog</Name></Step>
+            <Step><Name>SC-Local</Name></Step>
+            <Step><Name>CC-BigQuery</Name></Step>
+            <Step><Name>OA1-Info</Name></Step>
+        </Request>
+        <Response>
+            <Step><Name>PC-Token</Name></Step>
+        </Response>
+    </PreFlow>
+    <HTTPProxyConnection>
+        <BasePath>/catalog/v1</BasePath>
+    </HTTPProxyConnection>
+    <RouteRule name="hosted">
+        <Condition>proxy.pathsuffix MatchesPath "/render/**"</Condition>
+        <TargetEndpoint>hosted</TargetEndpoint>
+    </RouteRule>
+    <RouteRule name="default">
+        <TargetEndpoint>default</TargetEndpoint>
+    </RouteRule>
+</ProxyEndpoint>
