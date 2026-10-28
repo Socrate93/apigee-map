@@ -4,6 +4,7 @@ import dev.apigeemap.analysis.BundleAnalyzer;
 import dev.apigeemap.analysis.BundleLocator;
 import dev.apigeemap.analysis.SharedFlowRepository;
 import dev.apigeemap.migration.BundleMigration;
+import dev.apigeemap.migration.FileChange;
 import dev.apigeemap.migration.Finding;
 import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.migration.Migrator;
@@ -20,6 +21,7 @@ import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -98,7 +100,7 @@ class MigratorTest {
         assertTrue(dataCapture.contains("<Collect ref=\"order.total\" default=\"0\"/>"));
         assertTrue(hasResource(report, "Data collector", "dc_partnerId"));
 
-        String descriptor = Files.readString(proxy.resolve("legacy-edge-api.xml"));
+        String descriptor = Files.readString(proxy.resolve("legacy-edge-api.xml")).replace("\r\n", "\n");
         assertFalse(descriptor.contains("AM-Unused"));
         assertTrue(descriptor.startsWith("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<APIProxy"));
 
@@ -134,6 +136,37 @@ class MigratorTest {
         assertTrue(report.hasOpenErrors());
         assertTrue(new MigrationTextRenderer().render(report).contains("Changes to apply"));
         assertTrue(new MigrationHtmlRenderer().render(report).contains("data-filter=\"category=HYBRID\""));
+    }
+
+    /** Bundles checked out on Windows (git autocrlf) use CRLF: changed files keep it, paths still use /. */
+    @Test
+    void keepsWindowsLineEndingsAndPortablePaths() throws IOException {
+        Path crlf = tmp.resolve("crlf");
+        try (Stream<Path> files = Files.walk(LEGACY)) {
+            for (Path source : files.toList()) {
+                Path target = crlf.resolve(LEGACY.relativize(source).toString());
+                if (Files.isDirectory(source)) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.writeString(target, Files.readString(source).replace("\r\n", "\n").replace("\n", "\r\n"));
+                }
+            }
+        }
+        Path out = tmp.resolve("out");
+        MigrationReport report = new Migrator().migrate(new BundleAnalyzer(SharedFlowRepository.empty())
+                .analyze(BundleLocator.locate(crlf)), out);
+
+        for (String file : List.of("proxies/default.xml", "targets/default.xml", "policies/Stats-Orders.xml",
+                "legacy-edge-api.xml")) {
+            String written = Files.readString(out.resolve("legacy-edge-api/apiproxy").resolve(file));
+            assertTrue(written.contains("\r\n"), file);
+            assertFalse(written.replace("\r\n", "").contains("\n"), file + " has no bare LF");
+        }
+        FileChange endpoint = report.bundles().get(0).files().stream()
+                .filter(f -> f.path().equals("proxies/default.xml")).findFirst().orElseThrow();
+        long changedLines = endpoint.before().lines().filter(l -> !endpoint.after().lines().toList().contains(l)).count();
+        assertEquals(1, changedLines, "only the VirtualHost line differs");
+        assertTrue(report.bundles().get(0).files().stream().allMatch(f -> !f.path().contains("\\")));
     }
 
     @Test

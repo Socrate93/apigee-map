@@ -59,7 +59,7 @@ final class BundleWorkspace {
     /** XML files of a bundle sub-folder ({@code ""} for the descriptor), as bundle-relative paths. */
     List<String> xmlFiles(String folder) throws IOException {
         return Xml.xmlFiles(folder.isEmpty() ? dir : dir.resolve(folder)).stream()
-                .map(p -> dir.relativize(p).toString())
+                .map(p -> Xml.relativePath(dir, p))
                 .filter(f -> !deleted.contains(f))
                 .toList();
     }
@@ -69,7 +69,7 @@ final class BundleWorkspace {
         Path folder = dir.resolve("resources").resolve(type);
         if (!Files.isDirectory(folder)) return List.of();
         try (Stream<Path> files = Files.walk(folder)) {
-            return files.filter(Files::isRegularFile).map(p -> dir.relativize(p).toString()).sorted().toList();
+            return files.filter(Files::isRegularFile).map(p -> Xml.relativePath(dir, p)).sorted().toList();
         }
     }
 
@@ -112,7 +112,7 @@ final class BundleWorkspace {
         List<FileChange> result = new ArrayList<>();
         for (String file : files) {
             String after = deleted.contains(file) ? null
-                    : replaced.containsKey(file) ? replaced.get(file)
+                    : replaced.containsKey(file) ? matchLineEndings(file, replaced.get(file))
                     : serialize(file);
             result.add(new FileChange(file, read(file), after));
         }
@@ -131,7 +131,9 @@ final class BundleWorkspace {
             }
         }
         for (Map.Entry<String, String> entry : replaced.entrySet()) {
-            if (!deleted.contains(entry.getKey())) Files.writeString(target.resolve(entry.getKey()), entry.getValue());
+            if (!deleted.contains(entry.getKey())) {
+                Files.writeString(target.resolve(entry.getKey()), matchLineEndings(entry.getKey(), entry.getValue()));
+            }
         }
         for (String file : deleted) Files.deleteIfExists(target.resolve(file));
     }
@@ -162,9 +164,19 @@ final class BundleWorkspace {
             StringWriter out = new StringWriter();
             transformer.transform(new DOMSource(documents.get(file)), new StreamResult(out));
             String body = out.toString();
-            return (prolog.lookingAt() ? prolog.group() : "") + (body.endsWith("\n") ? body : body + "\n");
+            return matchLineEndings(file, (prolog.lookingAt() ? prolog.group() : "")
+                    + (body.endsWith("\n") ? body : body + "\n"));
         } catch (TransformerException e) {
             throw new IOException("Cannot write " + file + ": " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Uses the line endings of the original file: the XML parser turns CRLF into LF, and bundles checked out on
+     * Windows are often CRLF, so without this every line of a changed file would differ.
+     */
+    private String matchLineEndings(String file, String content) throws IOException {
+        String lf = content.replace("\r\n", "\n");
+        return read(file).contains("\r\n") ? lf.replace("\n", "\r\n") : lf;
     }
 }

@@ -371,7 +371,7 @@ function changesPanel(migration) {
 
 /** Line diff (longest common subsequence) of two texts; {@code after} null means the file is removed. */
 function diffLines(before, after) {
-  const split = text => text === null ? [] : text.replace(/\n$/, '').split('\n');
+  const split = text => text === null ? [] : text.replace(/\r?\n$/, '').split(/\r?\n/);
   const a = split(before), b = split(after);
   const n = a.length, m = b.length;
   const lcs = Array.from({length: n + 1}, () => new Uint32Array(m + 1));

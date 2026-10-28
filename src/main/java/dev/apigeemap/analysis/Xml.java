@@ -43,6 +43,11 @@ public final class Xml {
         }
     }
 
+    /** Path of {@code file} relative to {@code base}, always with / so it reads the same on every OS. */
+    public static String relativePath(Path base, Path file) {
+        return base.relativize(file).toString().replace('\\', '/');
+    }
+
     public static List<Element> children(Element parent, String name) {
         List<Element> result = new ArrayList<>();
         if (parent == null) return result;

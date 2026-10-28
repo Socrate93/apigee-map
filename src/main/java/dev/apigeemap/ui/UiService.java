@@ -3,6 +3,7 @@ package dev.apigeemap.ui;
 import dev.apigeemap.analysis.BundleAnalyzer;
 import dev.apigeemap.analysis.BundleLocator;
 import dev.apigeemap.analysis.SharedFlowRepository;
+import dev.apigeemap.analysis.Xml;
 import dev.apigeemap.migration.EnvResource;
 import dev.apigeemap.migration.Finding;
 import dev.apigeemap.migration.MigrationReport;
@@ -287,7 +288,7 @@ final class UiService {
 
     private static String id(Settings s, Path dir) {
         Path root = Path.of(s.proxiesRoot()).toAbsolutePath().normalize();
-        String id = root.relativize(dir).toString().replace('\\', '/');
+        String id = Xml.relativePath(root, dir);
         return id.isEmpty() ? "." : id;
     }
 

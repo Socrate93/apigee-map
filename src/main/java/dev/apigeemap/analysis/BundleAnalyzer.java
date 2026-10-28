@@ -197,7 +197,7 @@ public final class BundleAnalyzer {
                     fileName.substring(0, fileName.length() - ".xml".length()));
             boolean enabled = !"false".equalsIgnoreCase(Xml.attr(root, "enabled"));
             List<Attachment> attached = List.copyOf(attachments.getOrDefault(name, List.of()));
-            policies.add(new Policy(name, root.getTagName(), dir.relativize(file).toString(), enabled, attached));
+            policies.add(new Policy(name, root.getTagName(), Xml.relativePath(dir, file), enabled, attached));
             if (!enabled) {
                 ctx.issue(INFO, "Policy " + name + " is disabled: its dependencies are marked inactive");
             }
