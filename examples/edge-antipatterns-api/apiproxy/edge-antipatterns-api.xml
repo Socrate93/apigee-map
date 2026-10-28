@@ -5,12 +5,15 @@
     <Policies>
         <Policy>CC-BigQuery</Policy>
         <Policy>EV-Order</Policy>
+        <Policy>JS-Get-App</Policy>
         <Policy>OA1-Info</Policy>
         <Policy>PC-Token</Policy>
         <Policy>Q-Global</Policy>
         <Policy>Q-Partner</Policy>
         <Policy>RC-Catalog</Policy>
         <Policy>SC-Local</Policy>
+        <Policy>SC-Mgmt-Kvm</Policy>
+        <Policy>SC-Mgmt-Products</Policy>
         <Policy>VA-Key</Policy>
     </Policies>
 </APIProxy>

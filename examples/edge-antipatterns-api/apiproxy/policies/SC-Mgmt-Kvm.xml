@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ServiceCallout name="SC-Mgmt-Kvm">
+    <Request variable="kvmRequest">
+        <Set>
+            <Headers>
+                <Header name="Authorization">{private.mgmt.basic}</Header>
+            </Headers>
+            <Verb>GET</Verb>
+        </Set>
+    </Request>
+    <Response>kvmResponse</Response>
+    <HTTPTargetConnection>
+        <URL>http://ms01.apigee.internal:8080/v1/o/acme/environments/prod/keyvaluemaps/catalog-config</URL>
+    </HTTPTargetConnection>
+</ServiceCallout>

@@ -22,6 +22,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -93,6 +95,9 @@ public final class ScriptAnalyzer {
             }
         }
         Set<String> contexts = new LinkedHashSet<>(List.of("context"));
+        // Variables assigned once, so that httpClient.get(url) can be traced back to var url = "https://..."
+        Map<String, AstNode> values = new HashMap<>();
+        Set<String> reassigned = new HashSet<>();
         root.visit(node -> {
             AstNode target = null;
             AstNode value = null;
@@ -107,10 +112,15 @@ public final class ScriptAnalyzer {
                     && contexts.contains(original.getIdentifier())) {
                 contexts.add(alias.getIdentifier());
             }
+            if (target instanceof Name variable && value != null
+                    && values.put(variable.getIdentifier(), value) != null) {
+                reassigned.add(variable.getIdentifier());
+            }
             return true;
         });
+        values.keySet().removeAll(reassigned);
 
-        Collector collector = new Collector(contexts);
+        Collector collector = new Collector(contexts, values);
         root.visit(collector);
         return new Facts(List.copyOf(collector.reads), List.copyOf(collector.writes), collector.dynamicReads,
                 collector.dynamicWrites, List.copyOf(collector.urls), collector.httpClient, collector.waits, null);
@@ -131,6 +141,7 @@ public final class ScriptAnalyzer {
     private static final class Collector implements org.mozilla.javascript.ast.NodeVisitor {
 
         private final Set<String> contexts;
+        private final Map<String, AstNode> values;
         private final Set<String> reads = new LinkedHashSet<>();
         private final Set<String> writes = new LinkedHashSet<>();
         private final Set<String> urls = new LinkedHashSet<>();
@@ -139,8 +150,9 @@ public final class ScriptAnalyzer {
         private boolean httpClient;
         private boolean waits;
 
-        Collector(Set<String> contexts) {
+        Collector(Set<String> contexts, Map<String, AstNode> values) {
             this.contexts = contexts;
+            this.values = values;
         }
 
         @Override
@@ -180,15 +192,27 @@ public final class ScriptAnalyzer {
 
         /** {@code "https://host/x"} as is, {@code "https://host/" + id} as {@code https://host/{…}}. */
         private void url(AstNode argument) {
+            argument = resolve(argument);
             if (argument instanceof StringLiteral literal) {
                 urls.add(literal.getValue());
                 return;
             }
             AstNode left = argument;
-            while (left instanceof InfixExpression infix && infix.getType() == Token.ADD) left = infix.getLeft();
+            while (left instanceof InfixExpression infix && infix.getType() == Token.ADD) {
+                left = resolve(infix.getLeft());
+            }
             if (left != argument && left instanceof StringLiteral prefix && prefix.getValue().matches("(?i)https?://.*")) {
                 urls.add(prefix.getValue() + DYNAMIC);
             }
+        }
+
+        /** The value of a variable assigned once ({@code var url = ...}), followed a few levels deep. */
+        private AstNode resolve(AstNode node) {
+            for (int depth = 0; depth < 5 && node instanceof Name name && values.containsKey(name.getIdentifier());
+                 depth++) {
+                node = values.get(name.getIdentifier());
+            }
+            return node;
         }
     }
 }

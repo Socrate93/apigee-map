@@ -78,7 +78,7 @@ final class DesignRules {
             "loadbalancing", "upstream", "tls", "lookupcache", "populatecache", "responsecache", "invalidatecache",
             "keyvaluemap", "quota", "spikearrest", "javascript", "javacallout", "raisefault", "jsonattack",
             "xmlattack", "regularexpressionprotection", "accesstoken", "messagelogging", "analytics", "mint",
-            "sharedflowbundle", "x509", "ssl", "datacapture");
+            "sharedflowbundle", "x509", "ssl", "datacapture", "client_id");
 
     /** {@code {name}} in ExtractVariables patterns. */
     private static final Pattern PATTERN_VARIABLE = Pattern.compile("\\{([^}]+)}");

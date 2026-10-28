@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Javascript name="JS-Get-App" timeLimit="500">
+    <ResourceURL>jsc://get-app.js</ResourceURL>
+</Javascript>

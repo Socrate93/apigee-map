@@ -87,7 +87,7 @@ class UiServerTest {
     @Test
     void savesSettingsThatChangeTheMigration() throws Exception {
         Map<?, ?> payload = (Map<?, ?>) Json.parse(get("/api/settings").body());
-        assertEquals(36, ((List<?>) payload.get("rules")).size());
+        assertEquals(37, ((List<?>) payload.get("rules")).size());
         assertTrue(((Map<?, ?>) payload.get("defaultNamingPrefixes")).containsKey("AssignMessage"));
 
         String body = Json.write(Map.of(

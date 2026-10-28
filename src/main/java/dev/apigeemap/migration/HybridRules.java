@@ -43,6 +43,12 @@ final class HybridRules {
     /** virtualhost.name, virtualhost.aliases... outside of words, so {@code <VirtualHost>} never matches. */
     private static final Pattern VIRTUALHOST_VARIABLE = Pattern.compile("(?<![\\w.])virtualhost\\.[A-Za-z_][\\w.]*");
 
+    /** Edge management API paths: /v1/o/{org}/... or /v1/organizations/{org}/... */
+    private static final Pattern MANAGEMENT_PATH = Pattern.compile("(?i)/v1/(o|organizations)(/|$|\\{)");
+    /** Edge management servers: Edge cloud, or an OPDK management server on its default port. */
+    private static final Pattern MANAGEMENT_HOST = Pattern.compile(
+            "(?i)^https?://(api\\.enterprise\\.apigee\\.com|[^/]+:8080/v1/)");
+
     /** Apigee X and hybrid limit, also used by Google's migration assessment tool. */
     static final int MAX_PROXY_ENDPOINTS = 10;
 
@@ -68,7 +74,8 @@ final class HybridRules {
                 new Rule("HYB-09", HYBRID, "JSONPath expressions to retest", HybridRules::jsonPath),
                 new Rule("HYB-10", HYBRID, "Several ProxyEndpoints", HybridRules::proxyEndpoints),
                 new Rule("HYB-11", HYBRID, "virtualhost.* flow variables", HybridRules::virtualHostVariables),
-                new Rule("HYB-12", HYBRID, "JavaScript that does not parse", HybridRules::unparsableScripts));
+                new Rule("HYB-12", HYBRID, "JavaScript that does not parse", HybridRules::unparsableScripts),
+                new Rule("HYB-13", HYBRID, "Calls to the Edge management API", HybridRules::managementApiCalls));
     }
 
     /** StatisticsCollector → DataCapture, one data collector per statistic. */
@@ -313,6 +320,77 @@ final class HybridRules {
                     "Fix the syntax: Apigee runs JavaScript on Rhino too, so the policy can fail at deployment or at"
                             + " runtime. The other script checks skipped this file.");
         }
+    }
+
+    /**
+     * Calls to the Edge management API from the runtime: in hybrid the API moves to apigee.googleapis.com with
+     * Google authentication, and reading entities at runtime is usually better done with a policy. Checked on
+     * TargetEndpoints and ServiceCallouts (URL, or Path behind a TargetServer), target.url overrides and
+     * JavaScript calls; URLs built entirely at runtime cannot be seen.
+     */
+    private static void managementApiCalls(MigrationContext ctx) throws IOException {
+        for (String file : ctx.workspace.xmlFiles("targets")) {
+            Element root = ctx.workspace.root(file);
+            managementCall(ctx, "TargetEndpoint " + Xml.nameOf(root), Xml.path(root, "HTTPTargetConnection"));
+        }
+        for (Policy policy : ctx.policies()) {
+            if (!policy.attached()) continue;
+            Element root = ctx.xml(policy);
+            if (policy.type().equals("ServiceCallout")) {
+                managementCall(ctx, policy.name(), Xml.path(root, "HTTPTargetConnection"));
+            } else if (policy.type().equals("AssignMessage")) {
+                for (Element variable : Xml.children(root, "AssignVariable")) {
+                    if (!"target.url".equals(Xml.text(variable, "Name"))) continue;
+                    String url = Xml.text(variable, "Value");
+                    if (url == null) url = Xml.text(variable, "Template");
+                    if (isManagementApi(url)) reportManagementCall(ctx, policy.name(), "sets target.url to " + url, url);
+                }
+            }
+        }
+        for (Scripts.Script script : Scripts.of(ctx.report)) {
+            for (String url : script.facts().urls()) {
+                if (isManagementApi(url)) {
+                    reportManagementCall(ctx, script.policy(), script.file() + " calls " + url, url);
+                }
+            }
+        }
+    }
+
+    private static void managementCall(MigrationContext ctx, String location, Element connection) {
+        if (connection == null) return;
+        String url = Xml.text(connection, "URL");
+        if (isManagementApi(url)) {
+            reportManagementCall(ctx, location, "calls " + url, url);
+            return;
+        }
+        String path = Xml.text(connection, "Path");
+        if (Xml.path(connection, "LoadBalancer") != null && path != null && MANAGEMENT_PATH.matcher(path).find()) {
+            List<String> servers = Xml.children(Xml.path(connection, "LoadBalancer"), "Server").stream()
+                    .map(s -> Xml.attr(s, "name")).toList();
+            reportManagementCall(ctx, location, "calls " + path + " through target server " + names(servers), path);
+        }
+    }
+
+    static boolean isManagementApi(String url) {
+        if (url == null) return false;
+        String value = url.trim();
+        if (MANAGEMENT_HOST.matcher(value).find()) return true;
+        Matcher host = URL_HOST.matcher(value);
+        return host.find() && !host.group(1).equalsIgnoreCase("apigee.googleapis.com")
+                && MANAGEMENT_PATH.matcher(value.substring(host.end())).find();
+    }
+
+    private static void reportManagementCall(MigrationContext ctx, String location, String call, String url) {
+        String lower = url.toLowerCase(Locale.ROOT);
+        String instead = lower.contains("/keyvaluemaps") ? " Read KVM entries with KeyValueMapOperations instead."
+                : lower.matches(".*/(developers|apps|apiproducts|companies)\\b.*")
+                ? " Read developers, apps and products with AccessEntity (or the variables VerifyAPIKey and OAuthV2"
+                        + " set) instead."
+                : "";
+        ctx.manual(ERROR, location, "Edge management API: " + call,
+                "In Apigee hybrid the management API is https://apigee.googleapis.com/v1/organizations/{org}/...,"
+                        + " authenticated with a Google OAuth token of a service account, and some paths differ."
+                        + instead);
     }
 
     static String users(Dependency dependency) {

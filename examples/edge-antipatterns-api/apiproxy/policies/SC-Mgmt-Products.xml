@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ServiceCallout name="SC-Mgmt-Products">
+    <Request variable="productsRequest"/>
+    <Response>productsResponse</Response>
+    <HTTPTargetConnection>
+        <LoadBalancer>
+            <Server name="ts-management"/>
+        </LoadBalancer>
+        <Path>/v1/organizations/acme/apiproducts?expand=true</Path>
+    </HTTPTargetConnection>
+</ServiceCallout>

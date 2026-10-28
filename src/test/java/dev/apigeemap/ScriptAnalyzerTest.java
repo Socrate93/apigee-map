@@ -45,6 +45,19 @@ class ScriptAnalyzerTest {
     }
 
     @Test
+    void followsUrlsThroughVariablesAssignedOnce() {
+        ScriptAnalyzer.Facts facts = ScriptAnalyzer.analyze("""
+                var base = "https://ms01:8080/v1/o/";
+                var url = base + context.getVariable("organization.name") + "/apps";
+                httpClient.get(url);
+                var other = "https://a.example/x";
+                other = "https://b.example/y";
+                httpClient.get(other);
+                """, "e.js");
+        assertEquals(List.of("https://ms01:8080/v1/o/{…}"), facts.urls(), "reassigned variables are not guessed");
+    }
+
+    @Test
     void acceptsTopLevelReturnAndReportsSyntaxErrorsInEnglish() {
         assertNull(ScriptAnalyzer.analyze("if (!context.getVariable(\"a\")) return;\n", "c.js").error());
         assertEquals("line 1: missing ) after condition",

@@ -105,6 +105,7 @@ Exemples : `./apigee-map migrate examples/orders-api -s examples/sharedflows` et
 | HYB-10 | Plusieurs ProxyEndpoints (erreur au-delà de 10) | manuelle |
 | HYB-11 | Variables `virtualhost.*` (conditions, templates, JavaScript) : pas de virtual hosts dans hybrid | manuelle |
 | HYB-12 | JavaScript que Rhino ne sait pas parser | manuelle |
+| HYB-13 | Appels à l'API de management Edge (`/v1/o/…`, `/v1/organizations/…`, `api.enterprise.apigee.com`, port 8080) depuis un TargetEndpoint, un ServiceCallout (URL, ou `Path` derrière un target server), un `target.url` ou un JavaScript | manuelle |
 | SEC-01 | Aucune authentification dans le proxy ni ses shared flows | manuelle |
 | SEC-02 | Aucune protection contre les payloads malveillants | manuelle |
 | SEC-03 | Secrets en clair (AssignMessage, JS, InitialEntries de KVM, URL) | manuelle |

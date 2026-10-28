@@ -3,6 +3,9 @@
     <PreFlow name="PreFlow">
         <Request>
             <Step><Name>VA-Key</Name></Step>
+            <Step><Name>SC-Mgmt-Kvm</Name></Step>
+            <Step><Name>SC-Mgmt-Products</Name></Step>
+            <Step><Name>JS-Get-App</Name></Step>
         </Request>
     </PreFlow>
     <HTTPProxyConnection>

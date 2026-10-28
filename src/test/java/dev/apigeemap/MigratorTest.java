@@ -165,6 +165,25 @@ class MigratorTest {
     }
 
     @Test
+    void findsCallsToTheEdgeManagementApi() throws IOException {
+        MigrationReport report = new Migrator().migrate(analyze(ANTI_PATTERNS, false), null);
+        Finding kvm = report.findings().stream()
+                .filter(f -> f.rule().equals("HYB-13") && f.location().equals("SC-Mgmt-Kvm")).findFirst().orElseThrow();
+        assertEquals(Issue.Severity.ERROR, kvm.severity());
+        assertTrue(kvm.action().contains("KeyValueMapOperations"));
+        Finding products = report.findings().stream()
+                .filter(f -> f.rule().equals("HYB-13") && f.location().equals("SC-Mgmt-Products")).findFirst()
+                .orElseThrow();
+        assertTrue(products.message().contains("through target server ts-management"));
+        assertTrue(products.action().contains("AccessEntity"));
+        Finding script = report.findings().stream()
+                .filter(f -> f.rule().equals("HYB-13") && f.location().equals("JS-Get-App")).findFirst().orElseThrow();
+        assertTrue(script.message().contains("https://api.enterprise.apigee.com/v1/organizations/{…}"));
+        assertEquals(3, report.findings().stream().filter(f -> f.rule().equals("HYB-13")).count(),
+                "the other backends are not the management API");
+    }
+
+    @Test
     void flagsTooManyProxyEndpointsAndLeftoverHostedResources() throws IOException {
         Path copy = copy(ANTI_PATTERNS, tmp.resolve("big"));
         Path proxies = copy.resolve("apiproxy/proxies");
