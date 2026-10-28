@@ -46,16 +46,18 @@ public final class ScriptAnalyzer {
      * @param writes       flow variables set or removed with context.setVariable/removeVariable, by literal name
      * @param dynamicReads true when a variable name is computed at runtime
      * @param dynamicWrites true when a variable name is computed at runtime
-     * @param urls         literal URLs (or literal URL prefixes) called through httpClient or new Request(...)
+     * @param urls         literal URLs (or literal URL prefixes) called through httpClient or new Request(...),
+     *                     or assigned to target.url
+     * @param computedUrls source of the URLs computed entirely at runtime (no literal http(s) prefix)
      * @param httpClient   true when the script calls httpClient
      * @param waits        true when the script calls waitForComplete()
      * @param error        syntax error ("line N: message"), or null when the script parsed
      */
     public record Facts(List<String> reads, List<String> writes, boolean dynamicReads, boolean dynamicWrites,
-                        List<String> urls, boolean httpClient, boolean waits, String error) {
+                        List<String> urls, List<String> computedUrls, boolean httpClient, boolean waits, String error) {
 
         static Facts failed(String error) {
-            return new Facts(List.of(), List.of(), false, false, List.of(), false, false, error);
+            return new Facts(List.of(), List.of(), false, false, List.of(), List.of(), false, false, error);
         }
     }
 
@@ -123,7 +125,7 @@ public final class ScriptAnalyzer {
         Collector collector = new Collector(contexts, values);
         root.visit(collector);
         return new Facts(List.copyOf(collector.reads), List.copyOf(collector.writes), collector.dynamicReads,
-                collector.dynamicWrites, List.copyOf(collector.urls), collector.httpClient, collector.waits, null);
+                collector.dynamicWrites, List.copyOf(collector.urls), List.copyOf(collector.computedUrls), collector.httpClient, collector.waits, null);
     }
 
     /** Syntax errors come in English whatever the machine's locale: Rhino reads it from the current Context. */
@@ -145,6 +147,7 @@ public final class ScriptAnalyzer {
         private final Set<String> reads = new LinkedHashSet<>();
         private final Set<String> writes = new LinkedHashSet<>();
         private final Set<String> urls = new LinkedHashSet<>();
+        private final Set<String> computedUrls = new LinkedHashSet<>();
         private boolean dynamicReads;
         private boolean dynamicWrites;
         private boolean httpClient;
@@ -167,7 +170,14 @@ public final class ScriptAnalyzer {
                 if (contexts.contains(object)) {
                     switch (method) {
                         case "getVariable" -> dynamicReads |= !add(reads, first(call));
-                        case "setVariable", "removeVariable" -> dynamicWrites |= !add(writes, first(call));
+                        case "setVariable", "removeVariable" -> {
+                            dynamicWrites |= !add(writes, first(call));
+                            if (method.equals("setVariable") && call.getArguments().size() > 1
+                                    && first(call) instanceof StringLiteral name
+                                    && name.getValue().equals("target.url")) {
+                                url(call.getArguments().get(1));
+                            }
+                        }
                         default -> {
                         }
                     }
@@ -191,8 +201,9 @@ public final class ScriptAnalyzer {
         }
 
         /** {@code "https://host/x"} as is, {@code "https://host/" + id} as {@code https://host/{…}}. */
-        private void url(AstNode argument) {
-            argument = resolve(argument);
+        private void url(AstNode expression) {
+            if (expression == null) return;
+            AstNode argument = resolve(expression);
             if (argument instanceof StringLiteral literal) {
                 urls.add(literal.getValue());
                 return;
@@ -203,6 +214,9 @@ public final class ScriptAnalyzer {
             }
             if (left != argument && left instanceof StringLiteral prefix && prefix.getValue().matches("(?i)https?://.*")) {
                 urls.add(prefix.getValue() + DYNAMIC);
+            } else {
+                String source = expression.toSource().replaceAll("\\s+", " ");
+                computedUrls.add(source.length() > 80 ? source.substring(0, 77) + "..." : source);
             }
         }
 

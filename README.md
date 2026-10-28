@@ -106,9 +106,10 @@ Exemples : `./apigee-map migrate examples/orders-api -s examples/sharedflows` et
 | HYB-11 | Variables `virtualhost.*` (conditions, templates, JavaScript) : pas de virtual hosts dans hybrid | manuelle |
 | HYB-12 | JavaScript que Rhino ne sait pas parser | manuelle |
 | HYB-13 | Appels à l'API de management Edge (`/v1/o/…`, `/v1/organizations/…`, `api.enterprise.apigee.com`, port 8080) depuis un TargetEndpoint, un ServiceCallout (URL, ou `Path` derrière un target server), un `target.url` ou un JavaScript | manuelle |
+| HYB-14 | URLs dont l'hôte n'est connu qu'à l'exécution (TargetEndpoint, ServiceCallout, `target.url` d'un AssignMessage, appels et `target.url` en JavaScript) : HYB-08, HYB-13 et SEC-05 ne peuvent pas les vérifier | manuelle |
 | SEC-01 | Aucune authentification dans le proxy ni ses shared flows | manuelle |
 | SEC-02 | Aucune protection contre les payloads malveillants | manuelle |
-| SEC-03 | Secrets en clair (AssignMessage, JS, InitialEntries de KVM, URL) | manuelle |
+| SEC-03 | Secrets en clair (AssignMessage, JS, InitialEntries de KVM, URL) ; les URLs, chemins et noms en `*Url`, `*Endpoint`… ne comptent pas | manuelle |
 | SEC-04 | Secret lu depuis une KVM dans une variable non `private.` (visible en Debug) | manuelle |
 | SEC-05 | TLS backend sans truststore, protocoles obsolètes, HTTP en clair | manuelle |
 | SEC-06 | CORS `Access-Control-Allow-Origin: *` | manuelle |

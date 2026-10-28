@@ -40,7 +40,7 @@ final class Scripts {
             Matcher matcher = PYTHON_VARIABLE.matcher(source);
             while (matcher.find()) (matcher.group(1).equals("get") ? reads : writes).add(matcher.group(3));
             return new ScriptAnalyzer.Facts(List.copyOf(reads), List.copyOf(writes), false, false, List.of(),
-                    false, false, null);
+                    List.of(), false, false, null);
         }
     }
 

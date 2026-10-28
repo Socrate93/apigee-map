@@ -75,7 +75,8 @@ final class HybridRules {
                 new Rule("HYB-10", HYBRID, "Several ProxyEndpoints", HybridRules::proxyEndpoints),
                 new Rule("HYB-11", HYBRID, "virtualhost.* flow variables", HybridRules::virtualHostVariables),
                 new Rule("HYB-12", HYBRID, "JavaScript that does not parse", HybridRules::unparsableScripts),
-                new Rule("HYB-13", HYBRID, "Calls to the Edge management API", HybridRules::managementApiCalls));
+                new Rule("HYB-13", HYBRID, "Calls to the Edge management API", HybridRules::managementApiCalls),
+                new Rule("HYB-14", HYBRID, "URLs built at runtime", HybridRules::runtimeUrls));
     }
 
     /** StatisticsCollector → DataCapture, one data collector per statistic. */
@@ -391,6 +392,54 @@ final class HybridRules {
                 "In Apigee hybrid the management API is https://apigee.googleapis.com/v1/organizations/{org}/...,"
                         + " authenticated with a Google OAuth token of a service account, and some paths differ."
                         + instead);
+    }
+
+    /**
+     * Backends whose host is only known at runtime: the localhost (HYB-08), management API (HYB-13) and TLS (SEC-05)
+     * checks cannot tell where they go, so someone has to.
+     */
+    private static void runtimeUrls(MigrationContext ctx) throws IOException {
+        String action = "Check where it can point to in each environment: the localhost, management API and TLS"
+                + " checks cannot see a host computed at runtime. Prefer a TargetServer per environment.";
+        for (String file : ctx.workspace.xmlFiles("targets")) {
+            Element root = ctx.workspace.root(file);
+            String url = Xml.text(root, "HTTPTargetConnection", "URL");
+            if (computedHost(url)) ctx.manual(WARN, "TargetEndpoint " + Xml.nameOf(root),
+                    "Backend URL " + url + " is built at runtime", action);
+        }
+        for (Policy policy : ctx.policies()) {
+            if (!policy.attached()) continue;
+            Element root = ctx.xml(policy);
+            if (policy.type().equals("ServiceCallout")) {
+                String url = Xml.text(root, "HTTPTargetConnection", "URL");
+                if (computedHost(url)) ctx.manual(WARN, policy.name(), "Callout URL " + url + " is built at runtime",
+                        action);
+            } else if (policy.type().equals("AssignMessage")) {
+                for (Element variable : Xml.children(root, "AssignVariable")) {
+                    if (!"target.url".equals(Xml.text(variable, "Name"))) continue;
+                    String ref = Xml.text(variable, "Ref");
+                    String url = ref != null ? "{" + ref + "}" : Xml.text(variable, "Template");
+                    if (url == null) url = Xml.text(variable, "Value");
+                    if (computedHost(url)) ctx.manual(WARN, policy.name(), "Sets target.url to " + url
+                            + ", built at runtime", action);
+                }
+            }
+        }
+        for (Scripts.Script script : Scripts.of(ctx.report)) {
+            if (script.python()) continue;
+            ScriptAnalyzer.Facts facts = script.facts();
+            List<String> urls = new ArrayList<>(facts.computedUrls());
+            facts.urls().stream().filter(HybridRules::computedHost).forEach(urls::add);
+            if (!urls.isEmpty()) ctx.manual(WARN, script.policy(), "JavaScript " + script.file()
+                    + " calls URLs built at runtime: " + names(urls), action);
+        }
+    }
+
+    /** True when the host of the URL holds a {variable}, or the whole URL does. */
+    static boolean computedHost(String url) {
+        if (url == null || !url.contains("{")) return false;
+        Matcher matcher = URL_HOST.matcher(url.trim());
+        return !matcher.find() || url.trim().startsWith("{", matcher.end());
     }
 
     static String users(Dependency dependency) {

@@ -184,6 +184,47 @@ class MigratorTest {
     }
 
     @Test
+    void flagsUrlsBuiltAtRuntimeButNotTokenUrls() throws IOException {
+        Path copy = copy(ANTI_PATTERNS, tmp.resolve("runtime"));
+        Path bundle = copy.resolve("apiproxy");
+        Files.writeString(bundle.resolve("targets/default.xml"), "<TargetEndpoint name=\"default\">"
+                + "<HTTPTargetConnection><URL>https://{backend.host}/catalog</URL></HTTPTargetConnection>"
+                + "</TargetEndpoint>");
+        Files.writeString(bundle.resolve("policies/AM-Route.xml"), "<AssignMessage name=\"AM-Route\">"
+                + "<AssignVariable><Name>target.url</Name><Ref>route.url</Ref></AssignVariable>"
+                + "<AssignVariable><Name>auth.token_url</Name><Value>https://auth.example.com/oauth/token</Value>"
+                + "</AssignVariable></AssignMessage>");
+        Files.writeString(bundle.resolve("policies/JS-Notify.xml"),
+                "<Javascript name=\"JS-Notify\"><ResourceURL>jsc://notify.js</ResourceURL></Javascript>");
+        Files.writeString(bundle.resolve("resources/jsc/notify.js"), """
+                var tokenUrl = 'https://auth.example.com/oauth/token';
+                var host = context.getVariable("partner.host");
+                httpClient.get(tokenUrl);
+                httpClient.get("https://" + host + "/status");
+                httpClient.post(context.getVariable("callback.url"), "{}");
+                context.setVariable("target.url", "https://catalog.example.com/v2");
+                """);
+        Path proxy = bundle.resolve("proxies/default.xml");
+        Files.writeString(proxy, Files.readString(proxy).replace("<Step><Name>VA-Key</Name></Step>",
+                "<Step><Name>VA-Key</Name></Step><Step><Name>AM-Route</Name></Step>"
+                        + "<Step><Name>JS-Notify</Name></Step>"));
+
+        MigrationReport report = new Migrator().migrate(new BundleAnalyzer(SharedFlowRepository.empty())
+                .analyze(BundleLocator.locate(copy)), null);
+        assertManual(report, "HYB-14", Issue.Severity.WARN, "TargetEndpoint default");
+        assertManual(report, "HYB-14", Issue.Severity.WARN, "AM-Route");
+        Finding script = report.findings().stream()
+                .filter(f -> f.rule().equals("HYB-14") && f.location().equals("JS-Notify")).findFirst().orElseThrow();
+        assertTrue(script.message().contains("context.getVariable(\"callback.url\")"), script.message());
+        assertTrue(script.message().contains("https://{…}"), script.message());
+        assertFalse(script.message().contains("auth.example.com"), script.message());
+        assertFalse(script.message().contains("catalog.example.com"), script.message());
+        assertEquals(3, report.findings().stream().filter(f -> f.rule().equals("HYB-14")).count());
+        assertTrue(report.findings().stream().noneMatch(f -> f.rule().equals("SEC-03")),
+                "token URLs are not credentials");
+    }
+
+    @Test
     void flagsTooManyProxyEndpointsAndLeftoverHostedResources() throws IOException {
         Path copy = copy(ANTI_PATTERNS, tmp.resolve("big"));
         Path proxies = copy.resolve("apiproxy/proxies");

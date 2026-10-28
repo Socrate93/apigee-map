@@ -26,7 +26,7 @@ final class SecurityRules {
             "(?i)(password|passwd|pwd|secret|api[_.-]?key|client[_.-]?secret|token|credential|authorization)");
     /** {@code password = "literal"} in JavaScript, with at least 6 characters of value. */
     private static final Pattern JS_SECRET = Pattern.compile(
-            "(?i)[\"']?[\\w.-]*(password|passwd|secret|api[_-]?key|client[_-]?secret|token)[\\w.-]*[\"']?"
+            "(?i)[\"']?([\\w.-]*(?:password|passwd|secret|api[_-]?key|client[_-]?secret|token)[\\w.-]*)[\"']?"
                     + "\\s*[:=]\\s*[\"']([^\"'{}\\s]{6,})[\"']");
     private static final Pattern URL_CREDENTIALS = Pattern.compile("://[^/@{}\\s]+:[^/@\\s]+@");
 
@@ -80,12 +80,12 @@ final class SecurityRules {
                 for (Element param : Xml.descendants(root, element)) {
                     String name = Xml.attr(param, "name");
                     String value = Xml.text(param);
-                    if (name != null && literal(value) && SECRET.matcher(name).find()) found.add(element + " " + name);
+                    if (name != null && secret(name, value)) found.add(element + " " + name);
                 }
             }
             for (Element variable : Xml.descendants(root, "AssignVariable")) {
                 String name = Xml.text(variable, "Name");
-                if (name != null && literal(Xml.text(variable, "Value")) && SECRET.matcher(name).find()) {
+                if (name != null && secret(name, Xml.text(variable, "Value"))) {
                     found.add("variable " + name);
                 }
             }
@@ -108,7 +108,9 @@ final class SecurityRules {
         for (String file : ctx.workspace.resources("jsc")) {
             Matcher matcher = JS_SECRET.matcher(ctx.workspace.read(file));
             List<String> hits = new ArrayList<>();
-            while (matcher.find()) hits.add(matcher.group().replace(matcher.group(2), "***"));
+            while (matcher.find()) {
+                if (!locator(matcher.group(1), matcher.group(2))) hits.add(matcher.group().replace(matcher.group(2), "***"));
+            }
             if (!hits.isEmpty()) ctx.manual(ERROR, file, "Credentials in clear text: " + names(hits), action);
         }
         for (Dependency dependency : ctx.report.dependencies()) {
@@ -118,8 +120,15 @@ final class SecurityRules {
         }
     }
 
-    private static boolean literal(String value) {
-        return value != null && !value.contains("{");
+    /** A literal value under a secret-looking name, unless it is where the secret lives (tokenUrl = "https://..."). */
+    private static boolean secret(String name, String value) {
+        return value != null && !value.contains("{") && SECRET.matcher(name).find() && !locator(name, value);
+    }
+
+    /** URLs, paths and names of endpoints: {@code tokenUrl}, {@code token_endpoint}, {@code "/oauth/token"}. */
+    private static boolean locator(String name, String value) {
+        return value.contains("://") || value.startsWith("/")
+                || name.matches("(?i).*(url|uri|endpoint|host|path)");
     }
 
     private static void kvmSecretsVisibleInDebug(MigrationContext ctx) throws IOException {
