@@ -32,7 +32,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Fixes asked from the UI against a stand-in for the backend, written to a copy of an example bundle. */
+/**
+ * Fixes and script reviews asked from the UI against a stand-in for the backend, written to a copy of an example
+ * bundle.
+ */
 class UiFixTest {
 
     private static final Path EXAMPLES = Path.of("examples").toAbsolutePath();
@@ -44,6 +47,7 @@ class UiFixTest {
     private final KeyPair keys = Keys.generate();
     private final HttpClient http = HttpClient.newHttpClient();
     private final List<String> tokens = new CopyOnWriteArrayList<>();
+    private final List<Map<?, ?>> reviews = new CopyOnWriteArrayList<>();
     private HttpServer backend;
     private UiServer server;
     private Path bundle;
@@ -139,6 +143,57 @@ class UiFixTest {
         assertEquals(22, tokens.get(0).length(), "looks like a real token");
     }
 
+    @Test
+    void reviewsTheScriptsOnceAndReportsTheRemarksWhileTheScriptIsUnchanged() throws Exception {
+        Map<?, ?> scripts = (Map<?, ?>) detail().get("scripts");
+        int total = ((Number) scripts.get("total")).intValue();
+        assertTrue(total >= 4, scripts.toString());
+        assertEquals(0.0, scripts.get("reviewed"));
+
+        HttpResponse<String> reviewed = post("/api/review?id=factorization-api");
+        assertEquals(200, reviewed.statusCode(), reviewed.body());
+        assertEquals(Map.of("reviewed", (double) total, "remarks", 1.0), Json.parse(reviewed.body()));
+        Map<?, ?> request = reviews.get(0);
+        String sent = Json.write(request);
+        assertTrue(sent.contains("\"file\": \"resources/jsc/broken.js\""), sent);
+        assertTrue(((List<?>) request.get("files")).stream().anyMatch(f -> ((Map<?, ?>) f).get("path")
+                .equals("resources/jsc/broken.js")), "the scripts are sent");
+        assertTrue(sent.contains("\"rule\": \"DES-10\""), "with the findings already reported on them");
+
+        Map<?, ?> detail = detail();
+        assertEquals((double) total, ((Map<?, ?>) detail.get("scripts")).get("reviewed"));
+        Map<?, ?> finding = findings(detail).stream().filter(f -> f.get("rule").equals("REV-01")).findFirst()
+                .orElseThrow();
+        assertEquals("resources/jsc/broken.js:2 Secret in the code", finding.get("location"));
+        assertEquals("SECURITY", finding.get("category"));
+        assertEquals("ERROR", finding.get("severity"));
+        assertEquals(1, findings(detail).stream().filter(f -> f.get("rule").equals("REV-01")).count());
+        assertTrue(Files.list(tmp.resolve("reviews")).count() >= total - 1, "kept by script");
+
+        assertEquals(Map.of("reviewed", 0.0, "remarks", 0.0),
+                Json.parse(post("/api/review?id=factorization-api").body()), "nothing left to review");
+        assertEquals(1, reviews.size());
+
+        Files.writeString(bundle.resolve("resources/jsc/broken.js"), "// changed by hand\n");
+        detail = detail();
+        assertEquals((double) total - 1, ((Map<?, ?>) detail.get("scripts")).get("reviewed"));
+        assertFalse(findings(detail).stream().anyMatch(f -> f.get("rule").equals("REV-01")),
+                "a remark goes with the script it was made on");
+
+        assertEquals(200, post("/api/review?id=factorization-api&again=true").statusCode());
+        assertEquals(total, ((List<?>) reviews.get(1).get("scripts")).size(), "again reviews every script");
+    }
+
+    private Map<?, ?> detail() throws Exception {
+        return (Map<?, ?>) Json.parse(get("/api/proxy?id=factorization-api").body());
+    }
+
+    private static List<Map<?, ?>> findings(Map<?, ?> detail) {
+        return ((List<?>) ((Map<?, ?>) detail.get("migration")).get("bundles")).stream()
+                .flatMap(b -> ((List<?>) ((Map<?, ?>) b).get("findings")).stream()).<Map<?, ?>>map(f -> (Map<?, ?>) f)
+                .toList();
+    }
+
     private Map<?, ?> propose() throws Exception {
         HttpResponse<String> response = askFix();
         assertEquals(200, response.statusCode(), response.body());
@@ -166,27 +221,44 @@ class UiFixTest {
                 Map<?, ?> request = (Map<?, ?>) Json.parse(new String(opened.plaintext(), StandardCharsets.UTF_8));
                 tokens.add((String) request.get("token"));
                 if (!"t".equals(request.get("token"))) throw new IllegalStateException("refused");
+                Map<String, Object> reply = new LinkedHashMap<>();
+                reply.put("id", request.get("id"));
+                reply.put("ok", true);
+                if (request.get("type").equals("review")) {
+                    reviews.add((Map<?, ?>) request.get("body"));
+                    reply.put("body", Map.of("remarks", List.of(
+                            Map.of("bundle", "factorization-api", "file", "resources/jsc/broken.js", "line", 2,
+                                    "category", "SECURITY", "severity", "ERROR", "title", "Secret in the code",
+                                    "message", "A password is written in the script.", "action", "Read it from a KVM."),
+                            Map.of("bundle", "factorization-api", "file", "proxies/default.xml", "line", 1,
+                                    "category", "DESIGN", "severity", "WARN", "title", "Not a script",
+                                    "message", "Ignored.", "action", ""))));
+                    seal(exchange, opened, reply);
+                    return;
+                }
                 Map<String, Object> edit = new LinkedHashMap<>();
                 edit.put("bundle", "factorization-api");
                 edit.put("path", COPY);
                 edit.put("action", "delete");
                 edit.put("content", null);
                 edit.put("reason", "Same as audit.js");
-                Map<String, Object> reply = new LinkedHashMap<>();
-                reply.put("id", request.get("id"));
-                reply.put("ok", true);
                 reply.put("body", Map.of("summary", "Keep one copy.", "edits", List.of(edit), "warnings", List.of(),
                         "model", "claude-test", "inputTokens", 10, "outputTokens", 5));
-                byte[] body = opened.exchange().sealResponse(Json.write(reply).getBytes(StandardCharsets.UTF_8));
-                exchange.sendResponseHeaders(200, body.length);
-                try (OutputStream out = exchange.getResponseBody()) {
-                    out.write(body);
-                }
+                seal(exchange, opened, reply);
             } catch (Exception e) {
                 exchange.sendResponseHeaders(500, -1);
             }
         });
         backend.start();
+    }
+
+    private static void seal(com.sun.net.httpserver.HttpExchange exchange, Envelope.Opened opened,
+                             Map<String, Object> reply) throws Exception {
+        byte[] body = opened.exchange().sealResponse(Json.write(reply).getBytes(StandardCharsets.UTF_8));
+        exchange.sendResponseHeaders(200, body.length);
+        try (OutputStream out = exchange.getResponseBody()) {
+            out.write(body);
+        }
     }
 
     private static void copy(Path from, Path to) throws IOException {

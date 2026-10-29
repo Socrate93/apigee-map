@@ -53,6 +53,9 @@ const api = {
   proposeFix: (id, finding) => request('POST', '/api/fix?id=' + encodeURIComponent(id),
     {bundle: finding.bundle, rule: finding.rule, location: finding.location})
     .then(data => { if (data.error) throw new Error(data.error); return data; }),
+  // a failed review answers 200 with an error
+  reviewScripts: (id, again) => request('POST', '/api/review?id=' + encodeURIComponent(id) + (again ? '&again=true' : ''))
+    .then(data => { if (data.error) throw new Error(data.error); return data; }),
   acceptFix: proposal => request('POST', '/api/fix/accept?proposal=' + encodeURIComponent(proposal)),
   rejectFix: proposal => request('POST', '/api/fix/reject?proposal=' + encodeURIComponent(proposal)),
   markFalsePositive: (finding, reason) => request('POST', '/api/false-positive',
@@ -321,7 +324,7 @@ async function proxyView(id) {
     tabBar.replaceChildren(...tabs.map(([key, label, n]) => h('button', {type: 'button', role: 'tab',
         class: key === tab ? 'on' : '', 'aria-selected': String(key === tab), onclick: () => showTab(key)},
       label, n === null ? null : h('span', {class: 'count'}, n))));
-    const render = {findings: () => findingsPanel(id, findings, migration.applied, falsePositives, stale), changes: () => changesPanel(migration),
+    const render = {findings: () => h('div', {}, reviewBar(id, detail.scripts), findingsPanel(id, findings, migration.applied, falsePositives, stale)), changes: () => changesPanel(migration),
       resources: () => resourcesPanel(migration.resources), variables: () => variablesPanel(id), map: () => mapPanel(id),
       history: () => historyPanel(id)}[tab];
     panel.replaceChildren(render());
@@ -349,6 +352,37 @@ async function applyMigration(id, summary, outputDir, button) {
     button.disabled = false;
     button.textContent = summary.migrated ? 'Migrate again' : 'Apply migration';
   }
+}
+
+/** How many scripts of the proxy were reviewed as they are now, and a button to review the others; null without scripts. */
+function reviewBar(id, scripts) {
+  if (!scripts || !scripts.total) return null;
+  const pending = scripts.total - scripts.reviewed;
+  const label = () => pending ? 'Review scripts' : 'Review again';
+  const button = h('button', {type: 'button', class: pending ? 'primary' : '',
+    title: pending ? 'Look for problems in the JavaScript that the rules cannot see; the result is kept until a script changes'
+      : 'Review every script again, replacing the REV-01 findings', onclick: review}, label());
+  const status = h('span', {class: 'meta'}, !scripts.reviewed
+    ? scripts.total + ' script(s), not reviewed yet: a review looks for problems the rules cannot see.'
+    : pending ? scripts.reviewed + ' of ' + scripts.total + ' script(s) reviewed: the REV-01 findings come from the reviewed ones.'
+    : 'All ' + scripts.total + ' script(s) reviewed: their findings are listed under REV-01.');
+  const bar = h('div', {class: 'review-bar'}, status, button);
+
+  async function review() {
+    button.disabled = true;
+    button.replaceChildren(h('span', {class: 'spinner'}), ' Reviewing…');
+    status.textContent = 'Reviewing ' + (pending || scripts.total) + ' script(s). This can take a minute or two.';
+    try {
+      const result = await api.reviewScripts(id, !pending);
+      toast('Reviewed ' + result.reviewed + ' script(s): ' + result.remarks + ' finding(s)');
+      route();
+    } catch (error) {
+      toast(error.message, true);
+      button.disabled = false;
+      button.textContent = label();
+    }
+  }
+  return bar;
 }
 
 function findingsPanel(id, findings, applied, falsePositives, stale) {

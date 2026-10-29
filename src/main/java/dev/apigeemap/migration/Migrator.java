@@ -26,10 +26,11 @@ import java.util.stream.Stream;
 public final class Migrator {
 
     static final List<Rule> RULES = Stream.of(HybridRules.all(), SecurityRules.all(), PerformanceRules.all(),
-            DesignRules.all()).flatMap(List::stream).toList();
+            DesignRules.all(), ReviewRules.all()).flatMap(List::stream).toList();
 
     private final MigrationOptions options;
     private final SharedFlowRepository catalog;
+    private final ScriptReviews reviews;
 
     public Migrator() {
         this(MigrationOptions.DEFAULT);
@@ -41,8 +42,14 @@ public final class Migrator {
 
     /** @param catalog shared flows available locally, to spot proxies that repeat what one of them does */
     public Migrator(MigrationOptions options, SharedFlowRepository catalog) {
+        this(options, catalog, ScriptReviews.NONE);
+    }
+
+    /** @param reviews remarks of the script reviews, reported by REV-01 for the scripts reviewed as they are now */
+    public Migrator(MigrationOptions options, SharedFlowRepository catalog, ScriptReviews reviews) {
         this.options = options;
         this.catalog = catalog;
+        this.reviews = reviews;
     }
 
     public static List<RuleInfo> rules() {
@@ -88,7 +95,7 @@ public final class Migrator {
         for (BundleReport bundle : bundles) {
             BundleWorkspace workspace = new BundleWorkspace(Path.of(bundle.path()));
             MigrationContext ctx = new MigrationContext(bundle, workspace, sharedFlows, catalog.bundles(), options,
-                    resources, targetServers);
+                    reviews, resources, targetServers);
             Map<String, FileChange> applied = new LinkedHashMap<>();
             for (Rule rule : RULES) {
                 if (options.disabledRules().contains(rule.id())) continue;

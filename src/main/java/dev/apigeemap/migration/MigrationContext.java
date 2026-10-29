@@ -37,6 +37,8 @@ final class MigrationContext {
     /** Every shared flow available locally (called or not): sharedflowbundle/ folder → name. */
     final Map<Path, String> catalog;
     final MigrationOptions options;
+    /** Remarks of the script reviews, reported by REV-01. */
+    final ScriptReviews reviews;
 
     private final Map<String, EnvResource> resources;
     private final Map<String, NewTargetServer> targetServers;
@@ -46,13 +48,14 @@ final class MigrationContext {
     private Rule rule;
 
     MigrationContext(BundleReport report, BundleWorkspace workspace, Map<String, BundleReport> sharedFlows,
-                     Map<Path, String> catalog, MigrationOptions options, Map<String, EnvResource> resources,
-                     Map<String, NewTargetServer> targetServers) {
+                     Map<Path, String> catalog, MigrationOptions options, ScriptReviews reviews,
+                     Map<String, EnvResource> resources, Map<String, NewTargetServer> targetServers) {
         this.report = report;
         this.workspace = workspace;
         this.sharedFlows = sharedFlows;
         this.catalog = catalog;
         this.options = options;
+        this.reviews = reviews;
         this.resources = resources;
         this.targetServers = targetServers;
     }
@@ -101,17 +104,23 @@ final class MigrationContext {
 
     /** @param subjects what the finding is about, from {@link #on} and {@link #wholeBundle} */
     void manual(Issue.Severity severity, String location, String message, String action, List<Subject> subjects) {
-        add(severity, location, message, action, Finding.Fix.MANUAL, subjects);
+        add(rule.category(), severity, location, message, action, Finding.Fix.MANUAL, subjects);
+    }
+
+    /** A manual finding in another category than the one of the rule (a remark of a script review). */
+    void manual(Finding.Category category, Issue.Severity severity, String location, String message, String action,
+                List<Subject> subjects) {
+        add(category, severity, location, message, action, Finding.Fix.MANUAL, subjects);
     }
 
     void fixed(Issue.Severity severity, String location, String message, String action, List<Subject> subjects) {
-        add(severity, location, message, action, Finding.Fix.AUTO, subjects);
+        add(rule.category(), severity, location, message, action, Finding.Fix.AUTO, subjects);
     }
 
-    private void add(Issue.Severity severity, String location, String message, String action, Finding.Fix fix,
-                     List<Subject> subjects) {
+    private void add(Finding.Category category, Issue.Severity severity, String location, String message,
+                     String action, Finding.Fix fix, List<Subject> subjects) {
         Issue.Severity effective = options.severities().getOrDefault(rule.id(), severity);
-        Finding finding = new Finding(rule.id(), rule.category(), effective, report.name(), location, message, action,
+        Finding finding = new Finding(rule.id(), category, effective, report.name(), location, message, action,
                 fix, List.copyOf(new LinkedHashSet<>(subjects)));
         FalsePositive falsePositive = falsePositive(location);
         if (falsePositive == null) {

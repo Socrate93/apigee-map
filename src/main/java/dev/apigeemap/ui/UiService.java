@@ -12,6 +12,8 @@ import dev.apigeemap.migration.FixContext;
 import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.migration.Migrator;
 import dev.apigeemap.migration.RuleInfo;
+import dev.apigeemap.migration.ScriptReviewRequest;
+import dev.apigeemap.migration.ScriptReviews;
 import dev.apigeemap.model.BundleReport;
 import dev.apigeemap.model.Issue;
 import dev.apigeemap.protocol.BackendClient;
@@ -53,8 +55,12 @@ final class UiService {
                         String error) {
     }
 
+    /** @param scripts how many of its scripts were reviewed as they are now */
     record ProxyDetail(ProxySummary summary, String path, int policies, int dependencies, String outputDir,
-                       MigrationReport migration) {
+                       MigrationReport migration, ReviewStatus scripts) {
+    }
+
+    record ReviewStatus(int total, int reviewed) {
     }
 
     record RuleStat(String id, String category, String title, long findings, long proxies,
@@ -87,14 +93,17 @@ final class UiService {
     private final Path settingsFile;
     private final Path historyRoot;
     private final Path backendConfig;
+    private final ScriptReviews reviews;
     private final TokenStore token = new TokenStore();
     private final Map<String, Proposal> proposals = new LinkedHashMap<>();
     private Settings settings;
 
+    /** The script reviews are kept in {@code reviews/}, next to {@code historyRoot}. */
     UiService(Path settingsFile, Path historyRoot, Path backendConfig) throws IOException {
         this.settingsFile = settingsFile;
         this.historyRoot = historyRoot;
         this.backendConfig = backendConfig;
+        this.reviews = ScriptReviews.at(historyRoot.toAbsolutePath().resolveSibling("reviews"));
         this.settings = Settings.load(settingsFile);
     }
 
@@ -180,7 +189,7 @@ final class UiService {
     List<ProxySummary> proxies() throws IOException {
         Settings s = settings();
         SharedFlowRepository repository = repository(s);
-        Migrator migrator = new Migrator(s.migrationOptions(), repository);
+        Migrator migrator = new Migrator(s.migrationOptions(), repository, reviews);
         List<ProxySummary> result = new ArrayList<>();
         for (Path dir : proxyDirs(s)) {
             String id = id(s, dir);
@@ -199,9 +208,11 @@ final class UiService {
         Settings s = settings();
         BundleReport analysis = analyze(s, id);
         MigrationReport migration = migrator(s).migrate(analysis, null);
+        List<ScriptReviewRequest.Target> scripts = ScriptReviewRequest.scripts(analysis);
         return new ProxyDetail(summary(s, id, analysis, migration), analysis.path(), analysis.policies().size(),
                 analysis.dependencies().size(), output(s, analysis.name()).map(Path::toString).orElse(null),
-                migration);
+                migration, new ReviewStatus(scripts.size(),
+                (int) scripts.stream().filter(t -> reviews.has(t.fingerprint())).count()));
     }
 
     String mapHtml(String id) throws IOException {
@@ -289,6 +300,70 @@ final class UiService {
         result.put("warnings", reply.get("warnings") instanceof List<?> warnings ? warnings : List.of());
         result.put("edits", edits);
         return result;
+    }
+
+    /**
+     * Has the backend review the scripts of the proxy not reviewed as they are now, or all of them when {@code again}
+     * is set, and keeps the remarks, which REV-01 then reports. Answers {@code {reviewed, remarks}}, or
+     * {@code {error}} with the same message whatever the cause.
+     */
+    Map<String, Object> reviewScripts(String id, boolean again) throws IOException {
+        Settings s = settings();
+        BundleReport analysis = analyze(s, id);
+        List<ScriptReviewRequest.Target> targets = ScriptReviewRequest.scripts(analysis).stream()
+                .filter(t -> again || !reviews.has(t.fingerprint())).toList();
+        if (targets.isEmpty()) return Map.of("reviewed", 0, "remarks", 0);
+        FixContext context = ScriptReviewRequest.context(analysis, targets);
+        // the findings without the remarks of earlier reviews, which are about to be replaced
+        List<Finding> known = ScriptReviewRequest.known(migrator(s).migrate(analysis, null).findings(), context);
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("scripts", targets.stream().map(t -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("bundle", t.bundle());
+            m.put("policy", t.policy());
+            m.put("file", t.file());
+            m.put("inline", t.inline());
+            return m;
+        }).toList());
+        body.put("findings", known.stream().map(f -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("rule", f.rule());
+            m.put("bundle", f.bundle());
+            m.put("location", f.location());
+            m.put("message", f.message());
+            return m;
+        }).toList());
+        Map<String, Object> model = new FixContextRenderer().model(context);
+        body.put("policies", model.get("policies"));
+        body.put("files", model.get("files"));
+
+        Object answer;
+        try {
+            answer = new BackendClient(BackendConfig.load(backendConfig, token.get().orElse(null)))
+                    .call("review", body);
+        } catch (IOException | RuntimeException e) {
+            BackendClient.report(e, System.err);
+            answer = null;
+        }
+        if (!(answer instanceof Map<?, ?> reply) || !(reply.get("remarks") instanceof List<?> list)) {
+            return Map.of("error", BackendClient.UNAVAILABLE);
+        }
+        Map<String, List<ScriptReviews.Remark>> remarks = new LinkedHashMap<>();
+        targets.forEach(t -> remarks.put(t.bundle() + "/" + t.file(), new ArrayList<>()));
+        int count = 0;
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> map)) continue;
+            List<ScriptReviews.Remark> of = remarks.get(map.get("bundle") + "/" + map.get("file"));
+            ScriptReviews.Remark remark = ScriptReviews.remark(map);
+            if (of == null || remark == null) continue;
+            of.add(remark);
+            count++;
+        }
+        for (ScriptReviewRequest.Target target : targets) {
+            reviews.put(target.fingerprint(), remarks.get(target.bundle() + "/" + target.file()));
+        }
+        return Map.of("reviewed", targets.size(), "remarks", count);
     }
 
     void rejectFix(String key) {
@@ -423,7 +498,7 @@ final class UiService {
         Map<String, ResourceNeed> resources = new TreeMap<>();
         Settings s = settings();
         SharedFlowRepository repository = repository(s);
-        Migrator migrator = new Migrator(s.migrationOptions(), repository);
+        Migrator migrator = new Migrator(s.migrationOptions(), repository, reviews);
         int failed = 0;
         for (Path dir : proxyDirs(s)) {
             String id = id(s, dir);
@@ -523,8 +598,8 @@ final class UiService {
         return id.isEmpty() ? "." : id;
     }
 
-    private static Migrator migrator(Settings s) throws IOException {
-        return new Migrator(s.migrationOptions(), repository(s));
+    private Migrator migrator(Settings s) throws IOException {
+        return new Migrator(s.migrationOptions(), repository(s), reviews);
     }
 
     private static SharedFlowRepository repository(Settings s) throws IOException {

@@ -167,3 +167,5 @@ dialog.wide h2 { font-size: 16px; }
 dialog textarea { width: 100%; box-sizing: border-box; font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; resize: vertical; }
 dialog textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
 .false-positives summary .count { color: var(--muted); font-weight: normal; font-size: 12px; }
+
+.review-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 16px 0 4px; }
