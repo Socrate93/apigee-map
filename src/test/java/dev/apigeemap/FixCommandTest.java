@@ -107,7 +107,8 @@ class FixCommandTest {
                 "--config", config().toString()};
         assertEquals(1, FixCommand.run(args, () -> token, new PrintStream(new ByteArrayOutputStream()),
                 new PrintStream(err)));
-        assertTrue(err.toString().endsWith("error: " + BackendClient.UNAVAILABLE + "\n"), err.toString());
+        assertTrue(err.toString().endsWith("error: " + BackendClient.UNAVAILABLE + System.lineSeparator()),
+                err.toString());
     }
 
     private Path config() throws IOException {
