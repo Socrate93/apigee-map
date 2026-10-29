@@ -53,13 +53,15 @@ final class SecurityRules {
         if (!ctx.isProxy() || usesAny(ctx, AUTHENTICATION)) return;
         ctx.manual(WARN, ctx.report.name(), "No authentication policy in the proxy or in the shared flows it calls",
                 "Verify the caller in the ProxyEndpoint PreFlow (VerifyAPIKey, OAuthV2, VerifyJWT), unless a flow"
-                        + " hook already does it (flow hooks are not visible from the bundle).");
+                        + " hook already does it (flow hooks are not visible from the bundle).",
+                MigrationContext.wholeBundle());
     }
 
     private static void threatProtection(MigrationContext ctx) {
         if (!ctx.isProxy() || usesAny(ctx, THREAT_PROTECTION)) return;
         ctx.manual(INFO, ctx.report.name(), "No payload threat protection in the proxy or its shared flows",
-                "Add JSONThreatProtection / XMLThreatProtection (or OASValidation) on requests that carry a body.");
+                "Add JSONThreatProtection / XMLThreatProtection (or OASValidation) on requests that carry a body.",
+                MigrationContext.wholeBundle());
     }
 
     /** True when an active policy of one of the types runs in the bundle or in a shared flow it calls. */
@@ -90,7 +92,7 @@ final class SecurityRules {
                 }
             }
             if (!found.isEmpty()) {
-                ctx.manual(ERROR, policy.name(), "Credentials in clear text: " + names(found), action);
+                ctx.manual(ERROR, policy.name(), "Credentials in clear text: " + names(found), action, ctx.on(policy));
             }
         }
         for (Policy policy : ctx.policies("KeyValueMapOperations")) {
@@ -102,7 +104,8 @@ final class SecurityRules {
             }
             if (!keys.isEmpty()) {
                 ctx.manual(ERROR, policy.name(), "InitialEntries ship secret values in the bundle: " + names(keys),
-                        "Remove the InitialEntries and load the values into the KVM with the management API.");
+                        "Remove the InitialEntries and load the values into the KVM with the management API.",
+                        ctx.on(policy));
             }
         }
         for (String file : ctx.workspace.resources("jsc")) {
@@ -111,11 +114,17 @@ final class SecurityRules {
             while (matcher.find()) {
                 if (!locator(matcher.group(1), matcher.group(2))) hits.add(matcher.group().replace(matcher.group(2), "***"));
             }
-            if (!hits.isEmpty()) ctx.manual(ERROR, file, "Credentials in clear text: " + names(hits), action);
+            if (hits.isEmpty()) continue;
+            List<Finding.Subject> subjects = new ArrayList<>(ctx.onFile(file));
+            for (Scripts.Script script : Scripts.of(ctx.report)) {
+                if (script.file().equals(file)) subjects.addAll(ctx.on(script));
+            }
+            ctx.manual(ERROR, file, "Credentials in clear text: " + names(hits), action, subjects);
         }
         for (Dependency dependency : ctx.report.dependencies()) {
             if (dependency.kind() == DependencyKind.TARGET_URL && URL_CREDENTIALS.matcher(dependency.name()).find()) {
-                ctx.manual(ERROR, HybridRules.users(dependency), "Credentials embedded in a URL", action);
+                ctx.manual(ERROR, HybridRules.users(dependency), "Credentials embedded in a URL", action,
+                        ctx.on(dependency));
             }
         }
     }
@@ -138,7 +147,8 @@ final class SecurityRules {
                 if (assignTo == null || assignTo.startsWith("private.") || !SECRET.matcher(assignTo).find()) continue;
                 ctx.manual(WARN, policy.name(), "Secret read from the KVM into " + assignTo
                                 + ", which is visible in Debug sessions",
-                        "Assign it to private." + assignTo + " and update the policies that read it.");
+                        "Assign it to private." + assignTo + " and update the policies that read it.",
+                        ctx.on(policy));
             }
         }
     }
@@ -146,31 +156,33 @@ final class SecurityRules {
     private static void backendTls(MigrationContext ctx) throws IOException {
         for (String file : ctx.workspace.xmlFiles("targets")) {
             Element root = ctx.workspace.root(file);
-            tls(ctx, "TargetEndpoint " + Xml.nameOf(root), Xml.path(root, "HTTPTargetConnection"));
+            tls(ctx, "TargetEndpoint " + Xml.nameOf(root), Xml.path(root, "HTTPTargetConnection"), ctx.onFile(file));
         }
         for (Policy policy : ctx.policies("ServiceCallout")) {
-            tls(ctx, policy.name(), Xml.path(ctx.xml(policy), "HTTPTargetConnection"));
+            tls(ctx, policy.name(), Xml.path(ctx.xml(policy), "HTTPTargetConnection"), ctx.on(policy));
         }
     }
 
-    private static void tls(MigrationContext ctx, String location, Element connection) {
+    private static void tls(MigrationContext ctx, String location, Element connection,
+                            List<Finding.Subject> subjects) {
         if (connection == null) return;
         String url = Xml.text(connection, "URL");
         Element ssl = Xml.path(connection, "SSLInfo");
         boolean sslEnabled = ssl != null && "true".equalsIgnoreCase(Xml.text(ssl, "Enabled"));
         if (url != null && url.startsWith("http://")) {
             ctx.manual(INFO, location, "Backend called over plain HTTP: " + url,
-                    "Use HTTPS if the backend leaves the cluster network.");
+                    "Use HTTPS if the backend leaves the cluster network.", subjects);
         }
         if ((sslEnabled || (url != null && url.startsWith("https://"))) && Xml.text(ssl, "TrustStore") == null) {
             ctx.manual(WARN, location, "TLS to the backend without a truststore: its certificate is not verified",
                     "Add a TrustStore (through a reference) holding the backend CA, and set IgnoreValidationErrors"
-                            + " to false.");
+                            + " to false.", subjects);
         }
         List<String> weak = Xml.descendants(ssl, "Protocol").stream().map(Xml::text)
                 .filter(WEAK_PROTOCOLS::contains).toList();
         if (!weak.isEmpty()) {
-            ctx.manual(WARN, location, "Obsolete TLS protocols allowed: " + names(weak), "Allow TLSv1.2 and TLSv1.3 only.");
+            ctx.manual(WARN, location, "Obsolete TLS protocols allowed: " + names(weak), "Allow TLSv1.2 and TLSv1.3 only.",
+                    subjects);
         }
     }
 
@@ -180,7 +192,7 @@ final class SecurityRules {
                 if ("access-control-allow-origin".equalsIgnoreCase(Xml.attr(header, "name"))
                         && "*".equals(Xml.text(header))) {
                     ctx.manual(WARN, policy.name(), "CORS allows every origin (Access-Control-Allow-Origin: *)",
-                            "Use the CORS policy with the explicit list of allowed origins.");
+                            "Use the CORS policy with the explicit list of allowed origins.", ctx.on(policy));
                 }
             }
         }

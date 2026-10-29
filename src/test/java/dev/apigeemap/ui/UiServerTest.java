@@ -1,5 +1,6 @@
 package dev.apigeemap.ui;
 
+import dev.apigeemap.protocol.Json;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -71,6 +72,20 @@ class UiServerTest {
     }
 
     @Test
+    void listsTheVariablesOfEachStep() throws Exception {
+        Map<?, ?> flow = (Map<?, ?>) Json.parse(get("/api/variables?id=orders-api").body());
+        Map<?, ?> auth = ((List<?>) flow.get("steps")).stream().map(s -> (Map<?, ?>) s)
+                .filter(s -> s.get("policy").equals("AM-Backend-Auth")).findFirst().orElseThrow();
+        Map<?, ?> password = ((List<?>) auth.get("reads")).stream().map(r -> (Map<?, ?>) r)
+                .filter(r -> r.get("name").equals("private.backend.password")).findFirst().orElseThrow();
+        assertEquals("SET", password.get("source"));
+        Map<?, ?> producer = ((List<?>) flow.get("steps")).stream().map(s -> (Map<?, ?>) s)
+                .filter(s -> s.get("index").equals(((List<?>) password.get("producerSteps")).get(0)))
+                .findFirst().orElseThrow();
+        assertEquals("KVM-Get-Config", producer.get("policy"));
+    }
+
+    @Test
     void appliesTheMigrationOnceUnlessOverwriting() throws Exception {
         assertEquals(200, post("/api/apply?id=orders-api").statusCode());
         assertTrue(Files.isDirectory(tmp.resolve("out/orders-api/orders-api/apiproxy")));
@@ -87,7 +102,7 @@ class UiServerTest {
     @Test
     void savesSettingsThatChangeTheMigration() throws Exception {
         Map<?, ?> payload = (Map<?, ?>) Json.parse(get("/api/settings").body());
-        assertEquals(38, ((List<?>) payload.get("rules")).size());
+        assertEquals(39, ((List<?>) payload.get("rules")).size());
         assertTrue(((Map<?, ?>) payload.get("defaultNamingPrefixes")).containsKey("AssignMessage"));
 
         String body = Json.write(Map.of(

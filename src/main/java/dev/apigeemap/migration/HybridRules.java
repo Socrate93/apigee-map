@@ -109,7 +109,7 @@ final class HybridRules {
             ctx.workspace.replace(policy.file(), xml.toString(), "StatisticsCollector rewritten as DataCapture");
             ctx.fixed(ERROR, policy.name(), "StatisticsCollector is not supported by Apigee hybrid",
                     "Rewritten as a DataCapture policy. Create the data collectors " + names(collectors)
-                            + " before deploying, and point custom analytics reports at them.");
+                            + " before deploying, and point custom analytics reports at them.", ctx.on(policy));
         }
     }
 
@@ -138,7 +138,8 @@ final class HybridRules {
             ctx.fixed(WARN, "ProxyEndpoint " + Xml.nameOf(root),
                     "VirtualHost " + names(names) + " is ignored by Apigee hybrid",
                     "VirtualHost elements removed. Add the hostnames these virtual hosts served to the environment"
-                            + " group of the target environment: the proxy answers on every hostname of the group.");
+                            + " group of the target environment: the proxy answers on every hostname of the group.",
+                    ctx.onFile(file));
         }
     }
 
@@ -146,7 +147,8 @@ final class HybridRules {
         for (Policy policy : ctx.policies()) {
             String replacement = UNSUPPORTED_POLICIES.get(policy.type());
             if (replacement == null || !policy.attached()) continue;
-            ctx.manual(ERROR, policy.name(), policy.type() + " is not supported by Apigee hybrid", replacement);
+            ctx.manual(ERROR, policy.name(), policy.type() + " is not supported by Apigee hybrid", replacement,
+                    ctx.on(policy));
         }
     }
 
@@ -161,7 +163,7 @@ final class HybridRules {
             targets = true;
             ctx.manual(ERROR, "TargetEndpoint " + Xml.nameOf(root), kind + " are not supported by Apigee hybrid",
                     "Deploy the Node.js application as its own service (Cloud Run, GKE...) and target it through a"
-                            + " TargetServer.");
+                            + " TargetServer.", ctx.onFile(file));
         }
         if (targets) return;
         for (String type : List.of("node", "hosted")) {
@@ -170,7 +172,7 @@ final class HybridRules {
             ctx.manual(WARN, "resources/" + type, files.size() + " " + type
                             + " resource file(s) that Apigee hybrid does not support",
                     "No TargetEndpoint uses them: remove them from the bundle, or move the application they hold to"
-                            + " its own service.");
+                            + " its own service.", ctx.onFiles(files));
         }
     }
 
@@ -178,12 +180,12 @@ final class HybridRules {
         for (Policy policy : ctx.policies("MessageLogging")) {
             if (Xml.path(ctx.xml(policy), "File") == null) continue;
             ctx.manual(ERROR, policy.name(), "MessageLogging to a local file only exists on Edge for Private Cloud",
-                    "Log through Syslog or CloudLogging instead of File.");
+                    "Log through Syslog or CloudLogging instead of File.", ctx.on(policy));
         }
     }
 
     /** Resources referenced by URL but absent from the bundle: hybrid has no organization-level resource files. */
-    private static void externalResources(MigrationContext ctx) {
+    private static void externalResources(MigrationContext ctx) throws IOException {
         for (Dependency dependency : ctx.report.dependencies()) {
             if (dependency.kind() != DependencyKind.RESOURCE || !dependency.active()) continue;
             boolean external = dependency.usages().stream()
@@ -192,12 +194,13 @@ final class HybridRules {
             ctx.resource("Resource file (environment)", dependency.name(), "must exist in every target environment");
             ctx.manual(WARN, users(dependency), "Resource " + dependency.name() + " is not in the bundle",
                     "Copy it into the bundle's resources/ folder (preferred), or create it as an environment"
-                            + " resource: Apigee hybrid has no organization-level resource files.");
+                            + " resource: Apigee hybrid has no organization-level resource files.",
+                    ctx.on(dependency));
         }
     }
 
     /** Keystores/truststores named directly: a reference lets certificates rotate without redeploying. */
-    private static void directKeystores(MigrationContext ctx) {
+    private static void directKeystores(MigrationContext ctx) throws IOException {
         for (Dependency dependency : ctx.report.dependencies()) {
             boolean store = dependency.kind() == DependencyKind.KEYSTORE || dependency.kind() == DependencyKind.TRUSTSTORE;
             if (!store || !dependency.active()) continue;
@@ -205,7 +208,8 @@ final class HybridRules {
             ctx.manual(INFO, users(dependency), dependency.kind().label() + " " + dependency.name()
                             + " is named directly",
                     "Create a reference (e.g. " + dependency.name() + "-ref) in each environment and use ref://"
-                            + dependency.name() + "-ref, so certificates rotate without redeploying the proxy.");
+                            + dependency.name() + "-ref, so certificates rotate without redeploying the proxy.",
+                    ctx.on(dependency));
         }
     }
 
@@ -220,17 +224,18 @@ final class HybridRules {
             Element root = ctx.workspace.root(file);
             String url = Xml.text(root, "HTTPTargetConnection", "URL");
             if (isLocal(url)) ctx.manual(ERROR, "TargetEndpoint " + Xml.nameOf(root),
-                    "Backend URL " + url + " points to the local host", action);
+                    "Backend URL " + url + " points to the local host", action, ctx.onFile(file));
         }
         for (Policy policy : ctx.policies("ServiceCallout")) {
             String url = Xml.text(ctx.xml(policy), "HTTPTargetConnection", "URL");
             if (policy.attached() && isLocal(url)) ctx.manual(ERROR, policy.name(),
-                    "Callout URL " + url + " points to the local host", action);
+                    "Callout URL " + url + " points to the local host", action, ctx.on(policy));
         }
         for (Scripts.Script script : Scripts.of(ctx.report)) {
             for (String url : script.facts().urls()) {
                 if (isLocal(url)) ctx.manual(ERROR, script.policy(),
-                        "JavaScript " + script.file() + " calls " + url + ", which points to the local host", action);
+                        "JavaScript " + script.file() + " calls " + url + ", which points to the local host", action,
+                        ctx.on(script));
             }
         }
     }
@@ -253,7 +258,8 @@ final class HybridRules {
             if (paths.isEmpty()) continue;
             ctx.manual(WARN, policy.name(), "JSONPath " + names(paths) + " may return different results in hybrid",
                     "Apigee hybrid uses a newer JSONPath engine than Edge (filters, wildcards and single-item arrays"
-                            + " behave differently). Test each expression against sample payloads after deploying.");
+                            + " behave differently). Test each expression against sample payloads after deploying.",
+                    ctx.on(policy));
         }
     }
 
@@ -269,10 +275,12 @@ final class HybridRules {
         if (basePaths.size() > MAX_PROXY_ENDPOINTS) {
             ctx.manual(ERROR, ctx.report.name(), basePaths.size() + " ProxyEndpoints, above the limit of "
                             + MAX_PROXY_ENDPOINTS + " in Apigee hybrid",
-                    "Split the proxy into several proxies, grouping the ProxyEndpoints by base path.");
+                    "Split the proxy into several proxies, grouping the ProxyEndpoints by base path.",
+                    ctx.onFiles(ctx.workspace.xmlFiles("proxies")));
         } else if (basePaths.size() > 1) {
             ctx.manual(INFO, ctx.report.name(), basePaths.size() + " ProxyEndpoints: " + names(basePaths),
-                    "Consider one proxy per base path: proxies deploy, version and scale independently.");
+                    "Consider one proxy per base path: proxies deploy, version and scale independently.",
+                    ctx.onFiles(ctx.workspace.xmlFiles("proxies")));
         }
     }
 
@@ -286,20 +294,22 @@ final class HybridRules {
         for (Policy policy : ctx.policies()) {
             Set<String> variables = virtualHostVariables(ctx.workspace.read(policy.file()));
             if (policy.attached() && !variables.isEmpty()) {
-                ctx.manual(WARN, policy.name(), "Uses " + names(variables), action);
+                ctx.manual(WARN, policy.name(), "Uses " + names(variables), action, ctx.on(policy));
             }
         }
         for (String file : ctx.endpointFiles()) {
             Set<String> variables = virtualHostVariables(ctx.workspace.read(file));
             Element root = ctx.workspace.root(file);
             if (!variables.isEmpty()) {
-                ctx.manual(WARN, root.getTagName() + " " + Xml.nameOf(root), "Uses " + names(variables), action);
+                ctx.manual(WARN, root.getTagName() + " " + Xml.nameOf(root), "Uses " + names(variables), action,
+                        ctx.onFile(file));
             }
         }
         for (Scripts.Script script : Scripts.of(ctx.report)) {
             List<String> variables = script.facts().reads().stream().filter(v -> v.startsWith("virtualhost.")).toList();
             if (!variables.isEmpty()) {
-                ctx.manual(WARN, script.policy(), script.file() + " reads " + names(variables), action);
+                ctx.manual(WARN, script.policy(), script.file() + " reads " + names(variables), action,
+                        ctx.on(script));
             }
         }
     }
@@ -319,7 +329,7 @@ final class HybridRules {
             if (facts.error() == null) continue;
             ctx.manual(WARN, script.policy(), "JavaScript " + script.file() + " does not parse (" + facts.error() + ")",
                     "Fix the syntax: Apigee runs JavaScript on Rhino too, so the policy can fail at deployment or at"
-                            + " runtime. The other script checks skipped this file.");
+                            + " runtime. The other script checks skipped this file.", ctx.on(script));
         }
     }
 
@@ -332,43 +342,48 @@ final class HybridRules {
     private static void managementApiCalls(MigrationContext ctx) throws IOException {
         for (String file : ctx.workspace.xmlFiles("targets")) {
             Element root = ctx.workspace.root(file);
-            managementCall(ctx, "TargetEndpoint " + Xml.nameOf(root), Xml.path(root, "HTTPTargetConnection"));
+            managementCall(ctx, "TargetEndpoint " + Xml.nameOf(root), Xml.path(root, "HTTPTargetConnection"),
+                    ctx.onFile(file));
         }
         for (Policy policy : ctx.policies()) {
             if (!policy.attached()) continue;
             Element root = ctx.xml(policy);
             if (policy.type().equals("ServiceCallout")) {
-                managementCall(ctx, policy.name(), Xml.path(root, "HTTPTargetConnection"));
+                managementCall(ctx, policy.name(), Xml.path(root, "HTTPTargetConnection"), ctx.on(policy));
             } else if (policy.type().equals("AssignMessage")) {
                 for (Element variable : Xml.children(root, "AssignVariable")) {
                     if (!"target.url".equals(Xml.text(variable, "Name"))) continue;
                     String url = Xml.text(variable, "Value");
                     if (url == null) url = Xml.text(variable, "Template");
-                    if (isManagementApi(url)) reportManagementCall(ctx, policy.name(), "sets target.url to " + url, url);
+                    if (isManagementApi(url)) {
+                        reportManagementCall(ctx, policy.name(), "sets target.url to " + url, url, ctx.on(policy));
+                    }
                 }
             }
         }
         for (Scripts.Script script : Scripts.of(ctx.report)) {
             for (String url : script.facts().urls()) {
                 if (isManagementApi(url)) {
-                    reportManagementCall(ctx, script.policy(), script.file() + " calls " + url, url);
+                    reportManagementCall(ctx, script.policy(), script.file() + " calls " + url, url, ctx.on(script));
                 }
             }
         }
     }
 
-    private static void managementCall(MigrationContext ctx, String location, Element connection) {
+    private static void managementCall(MigrationContext ctx, String location, Element connection,
+                                       List<Finding.Subject> subjects) {
         if (connection == null) return;
         String url = Xml.text(connection, "URL");
         if (isManagementApi(url)) {
-            reportManagementCall(ctx, location, "calls " + url, url);
+            reportManagementCall(ctx, location, "calls " + url, url, subjects);
             return;
         }
         String path = Xml.text(connection, "Path");
         if (Xml.path(connection, "LoadBalancer") != null && path != null && MANAGEMENT_PATH.matcher(path).find()) {
             List<String> servers = Xml.children(Xml.path(connection, "LoadBalancer"), "Server").stream()
                     .map(s -> Xml.attr(s, "name")).toList();
-            reportManagementCall(ctx, location, "calls " + path + " through target server " + names(servers), path);
+            reportManagementCall(ctx, location, "calls " + path + " through target server " + names(servers), path,
+                    subjects);
         }
     }
 
@@ -381,7 +396,8 @@ final class HybridRules {
                 && MANAGEMENT_PATH.matcher(value.substring(host.end())).find();
     }
 
-    private static void reportManagementCall(MigrationContext ctx, String location, String call, String url) {
+    private static void reportManagementCall(MigrationContext ctx, String location, String call, String url,
+                                             List<Finding.Subject> subjects) {
         String lower = url.toLowerCase(Locale.ROOT);
         String instead = lower.contains("/keyvaluemaps") ? " Read KVM entries with KeyValueMapOperations instead."
                 : lower.matches(".*/(developers|apps|apiproducts|companies)\\b.*")
@@ -391,7 +407,7 @@ final class HybridRules {
         ctx.manual(ERROR, location, "Edge management API: " + call,
                 "In Apigee hybrid the management API is https://apigee.googleapis.com/v1/organizations/{org}/...,"
                         + " authenticated with a Google OAuth token of a service account, and some paths differ."
-                        + instead);
+                        + instead, subjects);
     }
 
     /**
@@ -405,7 +421,7 @@ final class HybridRules {
             Element root = ctx.workspace.root(file);
             String url = Xml.text(root, "HTTPTargetConnection", "URL");
             if (computedHost(url)) ctx.manual(WARN, "TargetEndpoint " + Xml.nameOf(root),
-                    "Backend URL " + url + " is built at runtime", action);
+                    "Backend URL " + url + " is built at runtime", action, ctx.onFile(file));
         }
         for (Policy policy : ctx.policies()) {
             if (!policy.attached()) continue;
@@ -413,7 +429,7 @@ final class HybridRules {
             if (policy.type().equals("ServiceCallout")) {
                 String url = Xml.text(root, "HTTPTargetConnection", "URL");
                 if (computedHost(url)) ctx.manual(WARN, policy.name(), "Callout URL " + url + " is built at runtime",
-                        action);
+                        action, ctx.on(policy));
             } else if (policy.type().equals("AssignMessage")) {
                 for (Element variable : Xml.children(root, "AssignVariable")) {
                     if (!"target.url".equals(Xml.text(variable, "Name"))) continue;
@@ -421,7 +437,7 @@ final class HybridRules {
                     String url = ref != null ? "{" + ref + "}" : Xml.text(variable, "Template");
                     if (url == null) url = Xml.text(variable, "Value");
                     if (computedHost(url)) ctx.manual(WARN, policy.name(), "Sets target.url to " + url
-                            + ", built at runtime", action);
+                            + ", built at runtime", action, ctx.on(policy));
                 }
             }
         }
@@ -431,7 +447,7 @@ final class HybridRules {
             List<String> urls = new ArrayList<>(facts.computedUrls());
             facts.urls().stream().filter(HybridRules::computedHost).forEach(urls::add);
             if (!urls.isEmpty()) ctx.manual(WARN, script.policy(), "JavaScript " + script.file()
-                    + " calls URLs built at runtime: " + names(urls), action);
+                    + " calls URLs built at runtime: " + names(urls), action, ctx.on(script));
         }
     }
 

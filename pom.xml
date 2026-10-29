@@ -15,6 +15,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <junit.version>5.10.2</junit.version>
         <rhino.version>1.7.15.1</rhino.version>
+        <jgit.version>7.4.0.202509020913-r</jgit.version>
     </properties>
 
     <dependencies>
@@ -23,6 +24,18 @@
             <groupId>org.mozilla</groupId>
             <artifactId>rhino</artifactId>
             <version>${rhino.version}</version>
+        </dependency>
+        <!-- History of the bundles changed in place: a git repository per bundle -->
+        <dependency>
+            <groupId>org.eclipse.jgit</groupId>
+            <artifactId>org.eclipse.jgit</artifactId>
+            <version>${jgit.version}</version>
+        </dependency>
+        <!-- JGit logs through SLF4J: silences its "no binding" warning -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-nop</artifactId>
+            <version>1.7.36</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -57,7 +70,7 @@
                     </archive>
                 </configuration>
             </plugin>
-            <!-- Bundles Rhino into target/apigee-map.jar so it still runs with java -jar -->
+            <!-- Bundles the dependencies into target/apigee-map.jar so it still runs with java -jar -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>

@@ -7,22 +7,14 @@ import dev.apigeemap.model.Policy;
 import org.w3c.dom.Element;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /** Scripts run by the active Javascript and Python Script policies of a bundle, when they are in the bundle. */
 final class Scripts {
-
-    /** {@code flow.getVariable("name")} and friends in Python scripts. */
-    private static final Pattern PYTHON_VARIABLE = Pattern.compile(
-            "flow\\.(get|set|remove)Variable\\(\\s*(['\"])([^'\"]+)\\2");
 
     /**
      * @param file bundle-relative path, or "inline" for a Javascript Source element
@@ -34,13 +26,7 @@ final class Scripts {
         }
 
         ScriptAnalyzer.Facts facts() {
-            if (!python) return ScriptAnalyzer.analyze(source, file);
-            Set<String> reads = new LinkedHashSet<>();
-            Set<String> writes = new LinkedHashSet<>();
-            Matcher matcher = PYTHON_VARIABLE.matcher(source);
-            while (matcher.find()) (matcher.group(1).equals("get") ? reads : writes).add(matcher.group(3));
-            return new ScriptAnalyzer.Facts(List.copyOf(reads), List.copyOf(writes), false, false, List.of(),
-                    List.of(), false, false, null);
+            return python ? ScriptAnalyzer.analyzePython(source) : ScriptAnalyzer.analyze(source, file);
         }
     }
 
@@ -58,17 +44,8 @@ final class Scripts {
                         scripts.add(new Script(bundle.name(), policy.name(), file, source, false)));
             } else if (policy.type().equals("Script")) {
                 Element xml = Xml.parse(dir.resolve(policy.file()));
-                List<Element> urls = new ArrayList<>(Xml.children(xml, "IncludeURL"));
-                urls.addAll(Xml.children(xml, "ResourceURL"));
-                for (Element url : urls) {
-                    String value = Xml.text(url);
-                    if (value == null || !value.startsWith("py://")) continue;
-                    String file = "resources/py/" + value.substring("py://".length());
-                    if (Files.isRegularFile(dir.resolve(file))) {
-                        scripts.add(new Script(bundle.name(), policy.name(), file, Files.readString(dir.resolve(file)),
-                                true));
-                    }
-                }
+                ScriptAnalyzer.pythonScripts(dir, xml).forEach((file, source) ->
+                        scripts.add(new Script(bundle.name(), policy.name(), file, source, true)));
             }
         }
         return scripts;

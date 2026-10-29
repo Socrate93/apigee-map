@@ -28,8 +28,9 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
- * In-memory copy of a bundle that rules read and change. The source folder is never modified:
- * {@link #writeTo(Path)} copies it and applies the changes to the copy. Untouched files are copied byte for byte.
+ * In-memory copy of a bundle that rules read and change. {@link #writeTo(Path)} copies the source folder and applies
+ * the changes to the copy (untouched files are copied byte for byte); {@link #applyInPlace()} writes them to the
+ * source folder itself.
  */
 final class BundleWorkspace {
 
@@ -125,6 +126,24 @@ final class BundleWorkspace {
         } catch (UncheckedIOException e) {
             throw e.getCause();
         }
+        write(target);
+    }
+
+    boolean hasPendingChanges() {
+        return !modified.isEmpty() || !replaced.isEmpty() || !deleted.isEmpty();
+    }
+
+    /** Writes the changes made so far to the source folder, and goes on from there; returns what changed. */
+    List<FileChange> applyInPlace() throws IOException {
+        List<FileChange> applied = preview();
+        write(dir);
+        modified.clear();
+        replaced.clear();
+        deleted.clear();
+        return applied;
+    }
+
+    private void write(Path target) throws IOException {
         for (String file : modified) {
             if (!deleted.contains(file) && !replaced.containsKey(file)) {
                 Files.writeString(target.resolve(file), serialize(file));

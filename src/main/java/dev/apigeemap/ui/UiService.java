@@ -3,16 +3,23 @@ package dev.apigeemap.ui;
 import dev.apigeemap.analysis.BundleAnalyzer;
 import dev.apigeemap.analysis.BundleLocator;
 import dev.apigeemap.analysis.SharedFlowRepository;
+import dev.apigeemap.analysis.VariableFlow;
 import dev.apigeemap.analysis.Xml;
+import dev.apigeemap.history.SourceHistory;
 import dev.apigeemap.migration.EnvResource;
 import dev.apigeemap.migration.Finding;
+import dev.apigeemap.migration.FixContext;
 import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.migration.Migrator;
 import dev.apigeemap.migration.RuleInfo;
 import dev.apigeemap.model.BundleReport;
 import dev.apigeemap.model.Issue;
+import dev.apigeemap.protocol.BackendClient;
+import dev.apigeemap.protocol.BackendConfig;
+import dev.apigeemap.render.FixContextRenderer;
 import dev.apigeemap.render.HtmlRenderer;
 import dev.apigeemap.render.MigrationHtmlRenderer;
+import dev.apigeemap.render.VariableFlowRenderer;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -24,12 +31,17 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.UUID;
 import java.util.stream.Stream;
 
-/** What the UI does: settings, proxy discovery, analysis, migration preview and application, overview. */
+/**
+ * What the UI does: settings, proxy discovery, analysis, migration preview and application, overview, fixes asked
+ * from the backend and the history of the bundles they change.
+ */
 final class UiService {
 
     /** Folders below the proxies root searched for apiproxy/ bundles. */
@@ -60,11 +72,29 @@ final class UiService {
     record PathCheck(String path, boolean exists, String message) {
     }
 
+    /** A fix the backend proposed, kept until it is accepted or rejected; {@code before} null for a new file. */
+    private record Proposal(String proxyId, Finding finding, String ruleTitle, String summary,
+                            List<ProposedEdit> edits) {
+    }
+
+    private record ProposedEdit(String bundle, String path, String action, String reason, String before,
+                                String after) {
+    }
+
+    /** Proposals not accepted nor rejected yet; the oldest are dropped. */
+    private static final int MAX_PROPOSALS = 20;
+
     private final Path settingsFile;
+    private final Path historyRoot;
+    private final Path backendConfig;
+    private final TokenStore token = new TokenStore();
+    private final Map<String, Proposal> proposals = new LinkedHashMap<>();
     private Settings settings;
 
-    UiService(Path settingsFile) throws IOException {
+    UiService(Path settingsFile, Path historyRoot, Path backendConfig) throws IOException {
         this.settingsFile = settingsFile;
+        this.historyRoot = historyRoot;
+        this.backendConfig = backendConfig;
         this.settings = Settings.load(settingsFile);
     }
 
@@ -79,6 +109,11 @@ final class UiService {
     synchronized void save(Settings updated) throws IOException {
         updated.save(settingsFile);
         settings = updated;
+    }
+
+    /** Keeps the client token in memory, never in a file; a blank one forgets it. */
+    void setToken(String value) {
+        token.set(value);
     }
 
     List<RuleInfo> rules() {
@@ -162,6 +197,11 @@ final class UiService {
         return new HtmlRenderer().render(analyze(settings(), id));
     }
 
+    /** The flow variables of the proxy, step by step; see {@link VariableFlowRenderer#model}. */
+    Map<String, Object> variables(String id) throws IOException {
+        return new VariableFlowRenderer().model(VariableFlow.of(analyze(settings(), id)), null);
+    }
+
     String migrationHtml(String id) throws IOException {
         Settings s = settings();
         return new MigrationHtmlRenderer().render(migrator(s).migrate(analyze(s, id), null));
@@ -183,6 +223,185 @@ final class UiService {
             deleteTree(target);
         }
         return migrator(s).migrate(analysis, target);
+    }
+
+    /**
+     * Asks the backend for the fix of one finding of the proxy, picked by its bundle, rule and location. Nothing is
+     * written: the proposal is kept under the returned {@code proposal} id until {@link #acceptFix} or
+     * {@link #rejectFix}.
+     */
+    Map<String, Object> proposeFix(String id, Map<?, ?> picked) throws IOException {
+        Settings s = settings();
+        BundleReport analysis = analyze(s, id);
+        Finding finding = migrator(s).migrate(analysis, null).findings().stream()
+                .filter(f -> f.bundle().equals(picked.get("bundle")) && f.rule().equals(picked.get("rule"))
+                        && f.location().equals(picked.get("location")))
+                .findFirst().orElseThrow(() -> new UiException(404, "This finding is gone: reload the proxy"));
+        FixContext context = FixContext.of(finding, FixContext.bundles(analysis));
+        Object answer;
+        try {
+            answer = new BackendClient(BackendConfig.load(backendConfig, token.get().orElse(null)))
+                    .call("fix", new FixContextRenderer().model(context));
+        } catch (IOException | RuntimeException e) {
+            answer = null;
+        }
+        // a failure answers 200 like a fix, with the same message whatever the cause
+        if (!(answer instanceof Map<?, ?> reply)) return Map.of("error", BackendClient.UNAVAILABLE);
+
+        List<ProposedEdit> edits = new ArrayList<>();
+        if (reply.get("edits") instanceof List<?> list) {
+            for (Object item : list) {
+                if (!(item instanceof Map<?, ?> edit)) continue;
+                String bundle = String.valueOf(edit.get("bundle"));
+                String path = String.valueOf(edit.get("path"));
+                String before = context.files().stream()
+                        .filter(f -> f.bundle().equals(bundle) && f.path().equals(path))
+                        .map(FixContext.SourceFile::content).findFirst().orElse(null);
+                edits.add(new ProposedEdit(bundle, path, String.valueOf(edit.get("action")),
+                        String.valueOf(edit.get("reason")), before,
+                        edit.get("content") instanceof String content ? content : null));
+            }
+        }
+        String summary = String.valueOf(reply.get("summary"));
+        String key = UUID.randomUUID().toString();
+        synchronized (proposals) {
+            proposals.put(key, new Proposal(id, finding, context.ruleTitle(), summary, List.copyOf(edits)));
+            while (proposals.size() > MAX_PROPOSALS) proposals.remove(proposals.keySet().iterator().next());
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("proposal", key);
+        result.put("finding", finding);
+        result.put("ruleTitle", context.ruleTitle());
+        result.put("summary", summary);
+        result.put("warnings", reply.get("warnings") instanceof List<?> warnings ? warnings : List.of());
+        result.put("edits", edits);
+        return result;
+    }
+
+    void rejectFix(String key) {
+        synchronized (proposals) {
+            proposals.remove(key);
+        }
+    }
+
+    /**
+     * Writes a proposal to the source bundles and records it as one step of their history. Changes made by hand
+     * before are recorded first, as their own step. Nothing is written when a file the proposal changes is no
+     * longer as it was when the fix was proposed.
+     */
+    synchronized List<SourceHistory.Step> acceptFix(String key) throws IOException {
+        Proposal proposal;
+        synchronized (proposals) {
+            proposal = proposals.get(key);
+        }
+        if (proposal == null) throw new UiException(404, "This proposal is gone: ask for a fix again");
+        Map<String, BundleReport> bundles = FixContext.bundles(analyze(settings(), proposal.proxyId()));
+
+        Map<ProposedEdit, Path> targets = new LinkedHashMap<>();
+        for (ProposedEdit edit : proposal.edits()) {
+            BundleReport bundle = bundles.get(edit.bundle());
+            if (bundle == null) throw new UiException(409, "Unknown bundle " + edit.bundle());
+            Path dir = Path.of(bundle.path()).toAbsolutePath().normalize();
+            Path file = dir.resolve(edit.path()).normalize();
+            if (!file.startsWith(dir) || file.equals(dir)) {
+                throw new UiException(409, "Not a file of " + edit.bundle() + ": " + edit.path());
+            }
+            String current = Files.isRegularFile(file) ? Files.readString(file) : null;
+            if (!Objects.equals(current, edit.before())) {
+                throw new UiException(409, edit.bundle() + "/" + edit.path()
+                        + " changed since the fix was proposed: ask for a fix again");
+            }
+            targets.put(edit, file);
+        }
+
+        Map<String, SourceHistory> histories = new LinkedHashMap<>();
+        try {
+            for (ProposedEdit edit : targets.keySet()) {
+                if (histories.containsKey(edit.bundle())) continue;
+                SourceHistory history = SourceHistory.open(Path.of(bundles.get(edit.bundle()).path()), historyRoot);
+                histories.put(edit.bundle(), history);
+                history.record("Manual changes");
+            }
+            for (Map.Entry<ProposedEdit, Path> target : targets.entrySet()) {
+                ProposedEdit edit = target.getKey();
+                if (edit.after() == null) {
+                    Files.deleteIfExists(target.getValue());
+                } else {
+                    Files.createDirectories(target.getValue().getParent());
+                    Files.writeString(target.getValue(), edit.after());
+                }
+            }
+            List<SourceHistory.Step> steps = new ArrayList<>();
+            for (Map.Entry<String, SourceHistory> entry : histories.entrySet()) {
+                StringBuilder message = new StringBuilder(proposal.finding().rule())
+                        .append(proposal.ruleTitle() == null ? "" : " " + proposal.ruleTitle())
+                        .append(" (proposed fix)\n\n")
+                        .append(proposal.summary()).append("\n\n");
+                for (ProposedEdit edit : targets.keySet()) {
+                    if (edit.bundle().equals(entry.getKey())) {
+                        message.append(edit.action()).append(' ').append(edit.path()).append(": ")
+                                .append(edit.reason()).append('\n');
+                    }
+                }
+                SourceHistory.Step step = entry.getValue().record(message.toString());
+                if (step != null) steps.add(step);
+            }
+            rejectFix(key);
+            return steps;
+        } finally {
+            histories.values().forEach(SourceHistory::close);
+        }
+    }
+
+    /** The steps of each bundle of the proxy changed in place, newest first; bundles without history are left out. */
+    List<Map<String, Object>> history(String id) throws IOException {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (BundleReport bundle : FixContext.bundles(analyze(settings(), id)).values()) {
+            Path dir = Path.of(bundle.path());
+            if (!SourceHistory.exists(dir, historyRoot)) continue;
+            try (SourceHistory history = SourceHistory.open(dir, historyRoot)) {
+                Map<String, Object> entry = new LinkedHashMap<>();
+                entry.put("bundle", bundle.name());
+                entry.put("type", bundle.type());
+                entry.put("steps", history.steps().stream().map(step -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("id", step.id());
+                    m.put("title", step.title());
+                    m.put("message", step.message());
+                    m.put("time", step.time().toString());
+                    m.put("files", step.files());
+                    m.put("original", step.title().equals(SourceHistory.ORIGINAL));
+                    return m;
+                }).toList());
+                entry.put("pending", history.pendingChanges());
+                result.add(entry);
+            }
+        }
+        return result;
+    }
+
+    String historyDiff(String id, String bundle, String step) throws IOException {
+        try (SourceHistory history = openHistory(id, bundle)) {
+            return history.diff(step);
+        }
+    }
+
+    synchronized SourceHistory.Step revertStep(String id, String bundle, String step) throws IOException {
+        try (SourceHistory history = openHistory(id, bundle)) {
+            return history.revert(step);
+        } catch (IOException e) {
+            // conflicts and changes not recorded yet are for the user to sort out
+            throw new UiException(409, e.getMessage());
+        }
+    }
+
+    private SourceHistory openHistory(String id, String bundle) throws IOException {
+        BundleReport report = FixContext.bundles(analyze(settings(), id)).get(bundle);
+        if (report == null || !SourceHistory.exists(Path.of(report.path()), historyRoot)) {
+            throw new UiException(404, "No history for " + bundle);
+        }
+        return SourceHistory.open(Path.of(report.path()), historyRoot);
     }
 
     Overview overview() throws IOException {

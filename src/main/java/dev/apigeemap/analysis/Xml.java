@@ -57,6 +57,16 @@ public final class Xml {
         return result;
     }
 
+    /** Every child element. */
+    public static List<Element> children(Element parent) {
+        List<Element> result = new ArrayList<>();
+        if (parent == null) return result;
+        for (Node n = parent.getFirstChild(); n != null; n = n.getNextSibling()) {
+            if (n instanceof Element e) result.add(e);
+        }
+        return result;
+    }
+
     public static List<Element> descendants(Element parent, String name) {
         List<Element> result = new ArrayList<>();
         if (parent == null) return result;

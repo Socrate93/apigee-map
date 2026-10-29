@@ -42,7 +42,8 @@ public final class MigrationHtmlRenderer {
                 .append("<style>").append(HtmlRenderer.CSS).append(EXTRA_CSS).append("</style></head><body><main>\n");
 
         out.append("<h1>").append(esc(report.name())).append(" → Apigee hybrid</h1><p class=\"meta\">")
-                .append(report.applied() ? "Migrated bundles written to <code>" + esc(report.outputDir()) + "</code>"
+                .append(report.applied() && report.outputDir() == null ? "Auto-fixes applied to the bundles themselves"
+                        : report.applied() ? "Migrated bundles written to <code>" + esc(report.outputDir()) + "</code>"
                         : "Dry run: nothing written")
                 .append(" · ").append(report.bundles().size()).append(" bundle(s)</p>\n");
 

@@ -3,6 +3,8 @@ package dev.apigeemap;
 import dev.apigeemap.analysis.BundleAnalyzer;
 import dev.apigeemap.analysis.BundleLocator;
 import dev.apigeemap.analysis.SharedFlowRepository;
+import dev.apigeemap.history.SourceHistory;
+import dev.apigeemap.migration.FixContext;
 import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.migration.MigrationOptions;
 import dev.apigeemap.migration.Migrator;
@@ -15,7 +17,9 @@ import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /** {@code apigee-map migrate}: Edge for Private Cloud → Apigee hybrid report and rewritten bundles. */
 final class MigrateCommand {
@@ -25,11 +29,15 @@ final class MigrateCommand {
 
               Checks the bundle and the shared flows it calls for Apigee hybrid incompatibilities and
               anti-patterns, and lists what to create in hybrid. With --out, also writes the rewritten bundles
-              (the source bundles are never modified).
+              (the source bundles are not modified). With --in-place, applies the auto-fixes to the bundles
+              themselves, one step per rule in their history (see history --help).
 
             Options:
               -s, --sharedflows <dir>  folder containing shared flows, repeatable; called shared flows are migrated too
                   --out <dir>          write the migrated bundles (and targetservers.json) to this empty folder
+                  --in-place           apply the auto-fixes to the bundle and its shared flows, recording each
+                                       rule as a step; changes not recorded yet are recorded first
+                  --history <dir>      where histories are kept (default ~/.apigee-map/history)
               -f, --format <format>    report format: text (default), html
               -o, --output <file>      write the report to a file; html when the name ends with .html
                   --strict             exit with code 3 when an error still needs manual work
@@ -44,6 +52,8 @@ final class MigrateCommand {
         String format = null;
         Path output = null;
         Path outDir = null;
+        boolean inPlace = false;
+        Path historyRoot = SourceHistory.defaultRoot();
         boolean strict = false;
         List<Path> sharedFlowDirs = new ArrayList<>();
         try {
@@ -55,6 +65,8 @@ final class MigrateCommand {
                     }
                     case "-s", "--sharedflows" -> sharedFlowDirs.add(Path.of(Main.value(args, ++i)));
                     case "--out" -> outDir = Path.of(Main.value(args, ++i));
+                    case "--in-place" -> inPlace = true;
+                    case "--history" -> historyRoot = Path.of(Main.value(args, ++i));
                     case "-f", "--format" -> format = Main.value(args, ++i);
                     case "-o", "--output" -> output = Path.of(Main.value(args, ++i));
                     case "--strict" -> strict = true;
@@ -67,6 +79,10 @@ final class MigrateCommand {
                 }
             }
             if (input == null) throw new IllegalArgumentException("Missing <bundle>");
+            if (inPlace && outDir != null) throw new IllegalArgumentException("--in-place and --out exclude each other");
+            if (inPlace && Files.isRegularFile(Path.of(input))) {
+                throw new IllegalArgumentException("--in-place needs a bundle folder, not a zip");
+            }
             if (format == null) {
                 boolean html = output != null && output.getFileName().toString().toLowerCase().matches(".*\\.html?");
                 format = html ? "html" : "text";
@@ -86,7 +102,9 @@ final class MigrateCommand {
                     ? SharedFlowRepository.empty()
                     : SharedFlowRepository.scan(sharedFlowDirs);
             BundleReport analysis = new BundleAnalyzer(repository).analyze(bundle);
-            MigrationReport report = new Migrator(MigrationOptions.DEFAULT, repository).migrate(analysis, outDir);
+            Migrator migrator = new Migrator(MigrationOptions.DEFAULT, repository);
+            MigrationReport report = inPlace ? inPlace(migrator, analysis, historyRoot, err)
+                    : migrator.migrate(analysis, outDir);
             String rendered = format.equals("html")
                     ? new MigrationHtmlRenderer().render(report)
                     : new MigrationTextRenderer().render(report);
@@ -100,6 +118,29 @@ final class MigrateCommand {
         } catch (IOException e) {
             err.println("error: " + e.getMessage());
             return 1;
+        }
+    }
+
+    private static MigrationReport inPlace(Migrator migrator, BundleReport analysis, Path historyRoot, PrintStream err)
+            throws IOException {
+        Map<String, SourceHistory> histories = new LinkedHashMap<>();
+        try {
+            for (BundleReport bundle : FixContext.bundles(analysis).values()) {
+                SourceHistory history = SourceHistory.open(Path.of(bundle.path()), historyRoot);
+                histories.put(bundle.name(), history);
+                SourceHistory.Step manual = history.record("Manual changes");
+                if (manual != null) {
+                    err.println(bundle.name() + ": recorded " + manual.files().size() + " file(s) changed by hand ("
+                            + manual.id() + ")");
+                }
+            }
+            return migrator.migrateInPlace(analysis, (bundle, rule, changes) -> {
+                SourceHistory.Step step = histories.get(bundle.name())
+                        .record(rule.id() + " " + rule.title() + "\n\n" + String.join("\n", changes));
+                if (step != null) err.println(bundle.name() + ": " + step.id() + " " + step.title());
+            });
+        } finally {
+            histories.values().forEach(SourceHistory::close);
         }
     }
 }

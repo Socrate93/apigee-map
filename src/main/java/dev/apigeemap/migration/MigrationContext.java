@@ -1,17 +1,23 @@
 package dev.apigeemap.migration;
 
+import dev.apigeemap.analysis.Xml;
+import dev.apigeemap.migration.Finding.Subject;
 import dev.apigeemap.model.BundleReport;
 import dev.apigeemap.model.BundleType;
+import dev.apigeemap.model.Dependency;
 import dev.apigeemap.model.Issue;
 import dev.apigeemap.model.Policy;
 import dev.apigeemap.model.SharedFlowLink;
+import dev.apigeemap.model.Usage;
 import org.w3c.dom.Element;
 
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -89,17 +95,82 @@ final class MigrationContext {
         return files;
     }
 
-    void manual(Issue.Severity severity, String location, String message, String action) {
-        add(severity, location, message, action, Finding.Fix.MANUAL);
+    /** @param subjects what the finding is about, from {@link #on} and {@link #wholeBundle} */
+    void manual(Issue.Severity severity, String location, String message, String action, List<Subject> subjects) {
+        add(severity, location, message, action, Finding.Fix.MANUAL, subjects);
     }
 
-    void fixed(Issue.Severity severity, String location, String message, String action) {
-        add(severity, location, message, action, Finding.Fix.AUTO);
+    void fixed(Issue.Severity severity, String location, String message, String action, List<Subject> subjects) {
+        add(severity, location, message, action, Finding.Fix.AUTO, subjects);
     }
 
-    private void add(Issue.Severity severity, String location, String message, String action, Finding.Fix fix) {
+    private void add(Issue.Severity severity, String location, String message, String action, Finding.Fix fix,
+                     List<Subject> subjects) {
         Issue.Severity effective = options.severities().getOrDefault(rule.id(), severity);
-        findings.add(new Finding(rule.id(), rule.category(), effective, report.name(), location, message, action, fix));
+        findings.add(new Finding(rule.id(), rule.category(), effective, report.name(), location, message, action, fix,
+                List.copyOf(new LinkedHashSet<>(subjects))));
+    }
+
+    @SafeVarargs
+    static List<Subject> and(List<Subject>... lists) {
+        return Arrays.stream(lists).flatMap(List::stream).toList();
+    }
+
+    /** A finding about the bundle as a whole. */
+    static List<Subject> wholeBundle() {
+        return List.of();
+    }
+
+    /** Policies of this bundle. */
+    List<Subject> on(Policy... policies) {
+        return Arrays.stream(policies).map(p -> new Subject(report.name(), p.file())).toList();
+    }
+
+    /** Files of this bundle (endpoints, resources), bundle-relative. */
+    List<Subject> onFiles(Collection<String> files) {
+        return files.stream().map(f -> new Subject(report.name(), f)).toList();
+    }
+
+    List<Subject> onFile(String file) {
+        return onFiles(List.of(file));
+    }
+
+    /** Policies by name, of this bundle or of the shared flow named {@code bundle}; unknown names are left out. */
+    List<Subject> onPolicies(String bundle, Collection<String> names) {
+        BundleReport owner = bundle.equals(report.name()) ? report : sharedFlows.get(bundle);
+        if (owner == null) return List.of();
+        return owner.policies().stream().filter(p -> names.contains(p.name()))
+                .map(p -> new Subject(owner.name(), p.file())).toList();
+    }
+
+    /** A script and the policy that runs it. */
+    List<Subject> on(Scripts.Script script) {
+        List<Subject> subjects = new ArrayList<>(onPolicies(script.bundle(), List.of(script.policy())));
+        if (!script.file().equals("inline")) subjects.add(new Subject(script.bundle(), script.file()));
+        return subjects;
+    }
+
+    /** The policies and endpoints of this bundle that declare the dependency. */
+    List<Subject> on(Dependency dependency) throws IOException {
+        List<Subject> subjects = new ArrayList<>();
+        for (Usage usage : dependency.usages()) {
+            if (usage.originType().equals("policy")) {
+                subjects.addAll(onPolicies(report.name(), List.of(usage.origin())));
+            } else {
+                String file = endpointFile(usage.originType(), usage.origin());
+                if (file != null) subjects.add(new Subject(report.name(), file));
+            }
+        }
+        return subjects;
+    }
+
+    /** File of the ProxyEndpoint, TargetEndpoint or SharedFlow with that name, or null. */
+    String endpointFile(String type, String name) throws IOException {
+        for (String file : endpointFiles()) {
+            Element root = workspace.root(file);
+            if (root.getTagName().equals(type) && Xml.nameOf(root).equals(name)) return file;
+        }
+        return null;
     }
 
     /** Registers a resource to provision; the first bundle that needs it is kept as {@code requiredBy}. */

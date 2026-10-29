@@ -16,8 +16,9 @@ public final class MigrationTextRenderer {
         StringBuilder out = new StringBuilder();
         String title = "Migration to Apigee hybrid: " + report.name();
         out.append(title).append('\n').append("═".repeat(title.length())).append('\n');
-        out.append(report.applied() ? "Migrated bundles written to " + report.outputDir()
-                : "Dry run: nothing written (pass --out <dir> to write the migrated bundles)").append('\n');
+        out.append(!report.applied() ? "Dry run: nothing written (pass --out <dir> to write the migrated bundles)"
+                : report.outputDir() == null ? "Auto-fixes applied to the bundles themselves"
+                : "Migrated bundles written to " + report.outputDir()).append('\n');
 
         List<Finding> findings = report.findings();
         section(out, "Summary");

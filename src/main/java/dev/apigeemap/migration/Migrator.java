@@ -20,7 +20,8 @@ import java.util.stream.Stream;
 /**
  * Migrates an analyzed Edge for Private Cloud bundle, and the shared flows it calls, to Apigee hybrid.
  * Runs every rule on every bundle, lists the resources hybrid needs, and — unless it is a dry run — writes
- * the rewritten bundles to an output folder ({@code <name>/apiproxy}, {@code sharedflows/<name>/sharedflowbundle}).
+ * the rewritten bundles to an output folder ({@code <name>/apiproxy}, {@code sharedflows/<name>/sharedflowbundle}),
+ * or applies the auto-fixes to the bundles themselves, rule after rule ({@link #migrateInPlace}).
  */
 public final class Migrator {
 
@@ -53,9 +54,27 @@ public final class Migrator {
         return new TreeMap<>(DesignRules.defaultPrefixes());
     }
 
+    /** Told of each rule whose auto-fixes changed a bundle, once they are written to it. */
+    @FunctionalInterface
+    public interface AppliedRule {
+        void applied(BundleReport bundle, RuleInfo rule, List<String> changes) throws IOException;
+    }
+
     /** @param outputDir where to write the migrated bundles; null for a dry run (report only) */
     public MigrationReport migrate(BundleReport root, Path outputDir) throws IOException {
         if (outputDir != null) checkEmpty(outputDir);
+        return run(root, outputDir, null);
+    }
+
+    /**
+     * Applies the auto-fixes to the source folders of the bundle and of the shared flows it calls, writing the
+     * changes of each rule before the next one runs, so that each rule can be recorded as a step of its own.
+     */
+    public MigrationReport migrateInPlace(BundleReport root, AppliedRule listener) throws IOException {
+        return run(root, null, listener);
+    }
+
+    private MigrationReport run(BundleReport root, Path outputDir, AppliedRule listener) throws IOException {
 
         Map<String, BundleReport> sharedFlows = new LinkedHashMap<>();
         MigrationContext.collect(root, sharedFlows);
@@ -70,12 +89,24 @@ public final class Migrator {
             BundleWorkspace workspace = new BundleWorkspace(Path.of(bundle.path()));
             MigrationContext ctx = new MigrationContext(bundle, workspace, sharedFlows, catalog.bundles(), options,
                     resources, targetServers);
+            Map<String, FileChange> applied = new LinkedHashMap<>();
             for (Rule rule : RULES) {
-                if (!options.disabledRules().contains(rule.id())) ctx.run(rule);
+                if (options.disabledRules().contains(rule.id())) continue;
+                int before = workspace.changes().size();
+                ctx.run(rule);
+                if (listener != null && workspace.hasPendingChanges()) {
+                    for (FileChange change : workspace.applyInPlace()) {
+                        FileChange first = applied.get(change.path());
+                        applied.put(change.path(), first == null ? change
+                                : new FileChange(change.path(), first.before(), change.after()));
+                    }
+                    List<String> changes = workspace.changes();
+                    listener.applied(bundle, rule.info(), changes.subList(before, changes.size()));
+                }
             }
             inventory(ctx);
 
-            String output = null;
+            String output = listener != null ? bundle.path() : null;
             if (outputDir != null) {
                 Path target = bundle.type() == BundleType.API_PROXY
                         ? outputDir.resolve(bundle.name()).resolve("apiproxy")
@@ -84,12 +115,12 @@ public final class Migrator {
                 output = target.toString();
             }
             results.add(new BundleMigration(bundle.name(), bundle.type(), bundle.path(), output, ctx.findings(),
-                    workspace.changes(), workspace.preview()));
+                    workspace.changes(), listener != null ? List.copyOf(applied.values()) : workspace.preview()));
         }
         if (outputDir != null && !targetServers.isEmpty()) {
             Files.writeString(outputDir.resolve("targetservers.json"), targetServersJson(targetServers.values()));
         }
-        return new MigrationReport(root.name(), outputDir != null,
+        return new MigrationReport(root.name(), outputDir != null || listener != null,
                 outputDir == null ? null : outputDir.toAbsolutePath().toString(), List.copyOf(results),
                 List.copyOf(resources.values()));
     }

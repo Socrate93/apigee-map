@@ -2,6 +2,7 @@ package dev.apigeemap.ui;
 
 import dev.apigeemap.migration.MigrationOptions;
 import dev.apigeemap.model.Issue;
+import dev.apigeemap.protocol.Json;
 
 import java.io.IOException;
 import java.nio.file.Files;

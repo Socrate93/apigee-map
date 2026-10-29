@@ -43,11 +43,26 @@ async function request(method, path, body) {
 const api = {
   settings: () => request('GET', '/api/settings'),
   saveSettings: settings => request('PUT', '/api/settings', settings),
+  saveToken: token => request('PUT', '/api/token', {token}),
   proxies: () => request('GET', '/api/proxies'),
   proxy: id => request('GET', '/api/proxy?id=' + encodeURIComponent(id)),
   apply: (id, overwrite) => request('POST', '/api/apply?id=' + encodeURIComponent(id) + (overwrite ? '&overwrite=true' : '')),
   overview: () => request('GET', '/api/overview'),
+  variables: id => request('GET', '/api/variables?id=' + encodeURIComponent(id)),
+  // a failed fix answers 200 with an error
+  proposeFix: (id, finding) => request('POST', '/api/fix?id=' + encodeURIComponent(id),
+    {bundle: finding.bundle, rule: finding.rule, location: finding.location})
+    .then(data => { if (data.error) throw new Error(data.error); return data; }),
+  acceptFix: proposal => request('POST', '/api/fix/accept?proposal=' + encodeURIComponent(proposal)),
+  rejectFix: proposal => request('POST', '/api/fix/reject?proposal=' + encodeURIComponent(proposal)),
+  history: id => request('GET', '/api/history?id=' + encodeURIComponent(id)),
+  stepDiff: (id, bundle, step) => request('GET', '/api/history/diff?' + stepQuery(id, bundle, step)),
+  revertStep: (id, bundle, step) => request('POST', '/api/history/revert?' + stepQuery(id, bundle, step)),
 };
+
+function stepQuery(id, bundle, step) {
+  return 'id=' + encodeURIComponent(id) + '&bundle=' + encodeURIComponent(bundle) + '&step=' + encodeURIComponent(step);
+}
 
 let toastTimer;
 function toast(message, bad) {
@@ -272,7 +287,9 @@ async function proxyView(id) {
     ['findings', 'Findings', findings.length],
     ['changes', 'Changes', files.length],
     ['resources', 'To create in hybrid', migration.resources.length],
+    ['variables', 'Variables', null],
     ['map', 'Dependency map', null],
+    ['history', 'History', null],
   ];
   const panel = h('div', {});
   const tabBar = h('div', {class: 'tabs', role: 'tablist'});
@@ -281,8 +298,9 @@ async function proxyView(id) {
     tabBar.replaceChildren(...tabs.map(([key, label, n]) => h('button', {type: 'button', role: 'tab',
         class: key === tab ? 'on' : '', 'aria-selected': String(key === tab), onclick: () => showTab(key)},
       label, n === null ? null : h('span', {class: 'count'}, n))));
-    const render = {findings: () => findingsPanel(findings, migration.applied), changes: () => changesPanel(migration),
-      resources: () => resourcesPanel(migration.resources), map: () => mapPanel(id)}[tab];
+    const render = {findings: () => findingsPanel(id, findings, migration.applied), changes: () => changesPanel(migration),
+      resources: () => resourcesPanel(migration.resources), variables: () => variablesPanel(id), map: () => mapPanel(id),
+      history: () => historyPanel(id)}[tab];
     panel.replaceChildren(render());
   }
   showTab(detailState.tab);
@@ -310,7 +328,7 @@ async function applyMigration(id, summary, outputDir, button) {
   }
 }
 
-function findingsPanel(findings, applied) {
+function findingsPanel(id, findings, applied) {
   const box = h('div', {});
   if (!findings.length) return empty('No findings: nothing to change for hybrid.');
   const filters = h('div', {class: 'toolbar'});
@@ -334,14 +352,157 @@ function findingsPanel(findings, applied) {
         h('td', {}, h('code', {}, f.location)),
         h('td', {}, f.message),
         h('td', {class: 'sub'}, f.action),
-        h('td', {}, fixBadge(f, applied))));
-    body.replaceChildren(...(rows.length ? rows : [h('tr', {}, h('td', {colspan: 7, class: 'sub'}, 'No finding matches the filter.'))]));
+        h('td', {}, fixBadge(f, applied)),
+        h('td', {class: 'nowrap'}, f.fix === 'MANUAL'
+          ? h('button', {type: 'button', title: 'Get a proposed fix for this finding and review it before it is written',
+              onclick: () => fixDialog(id, f)}, 'Propose a fix')
+          : null)));
+    body.replaceChildren(...(rows.length ? rows : [h('tr', {}, h('td', {colspan: 8, class: 'sub'}, 'No finding matches the filter.'))]));
   }
   render();
-  box.append(filters, h('div', {class: 'wrap'}, h('table', {style: 'min-width:960px'},
-    h('thead', {}, h('tr', {}, ['Severity', 'Rule', 'Bundle', 'Where', 'Finding', 'What to do', 'Fix'].map(t => h('th', {}, t)))),
+  box.append(filters, h('div', {class: 'wrap'}, h('table', {style: 'min-width:1060px'},
+    h('thead', {}, h('tr', {}, ['Severity', 'Rule', 'Bundle', 'Where', 'Finding', 'What to do', 'Fix', ''].map(t => h('th', {}, t)))),
     body)));
   return box;
+}
+
+/**
+ * Asks the backend for a fix of one finding and shows it as diffs. Accept writes it to the source bundles as a step
+ * of their history; Reject drops it. Nothing is written before Accept.
+ */
+async function fixDialog(id, finding) {
+  let proposal = null;
+  const body = h('div', {class: 'proposal'},
+    h('p', {class: 'meta'}, h('span', {class: 'spinner'}), ' Preparing a fix. This can take a minute or two.'));
+  const reject = h('button', {type: 'button', onclick: () => dialog.close()}, 'Reject');
+  const accept = h('button', {type: 'button', class: 'primary', disabled: true, onclick: acceptProposal}, 'Accept');
+  const dialog = h('dialog', {class: 'wide'},
+    h('h2', {}, h('code', {}, finding.rule), ' ', finding.message),
+    h('p', {class: 'meta mono'}, finding.bundle + ' · ' + finding.location),
+    body,
+    h('div', {class: 'actions'}, reject, accept));
+  dialog.addEventListener('close', () => {
+    if (proposal && !dialog.dataset.accepted) api.rejectFix(proposal.proposal).catch(() => {});
+    dialog.remove();
+  });
+  document.body.append(dialog);
+  dialog.showModal();
+
+  try {
+    proposal = await api.proposeFix(id, finding);
+  } catch (error) {
+    body.replaceChildren(errorBox(error));
+    reject.textContent = 'Close';
+    return;
+  }
+  if (!dialog.open) {
+    api.rejectFix(proposal.proposal).catch(() => {});
+    return;
+  }
+  body.replaceChildren(
+    h('p', {class: 'meta'}, 'Nothing is written until you accept.'),
+    h('p', {}, proposal.summary),
+    proposal.warnings.length ? h('div', {class: 'warnings'}, h('b', {}, 'Check before deploying'),
+      h('ul', {}, proposal.warnings.map(w => h('li', {}, w)))) : null,
+    proposal.edits.length ? h('div', {}, proposal.edits.map(edit => h('div', {class: 'file-edit'},
+      h('div', {}, h('span', {class: 'badge ' + (edit.action === 'delete' ? 'bad' : 'auto')}, edit.action), ' ',
+        h('code', {}, edit.bundle + '/' + edit.path)),
+      h('p', {class: 'sub'}, edit.reason),
+      diffView(diffLines(edit.before, edit.after)))))
+      : empty('No change proposed for this finding.'));
+  accept.disabled = !proposal.edits.length;
+
+  async function acceptProposal() {
+    accept.disabled = reject.disabled = true;
+    accept.textContent = 'Writing…';
+    try {
+      const steps = await api.acceptFix(proposal.proposal);
+      dialog.dataset.accepted = 'true';
+      dialog.close();
+      toast('Fix written to the sources' + (steps.length ? ', recorded as step ' + steps.map(s => s.id).join(', ') : ''));
+      detailState.tab = 'history';
+      route();
+    } catch (error) {
+      toast(error.message, true);
+      accept.textContent = 'Accept';
+      reject.disabled = false;
+    }
+  }
+}
+
+/** The steps of the source bundles changed in place, each with its diff and a way to undo it. */
+function historyPanel(id) {
+  const box = h('div', {style: 'margin-top:16px'}, h('p', {class: 'meta'}, 'Loading…'));
+  api.history(id).then(bundles => {
+    if (!bundles.length) {
+      box.replaceChildren(empty('No change made to the sources yet. Fixes you accept are recorded here, one step each, and can be undone.'));
+      return;
+    }
+    box.replaceChildren(h('p', {class: 'meta'}, 'Changes made to the source bundles, newest first. Undoing a step records a new step.'));
+    for (const bundle of bundles) {
+      box.append(h('h3', {}, bundle.bundle, h('span', {class: 'sub'}, '  ' + (bundle.type === 'API_PROXY' ? 'API proxy' : 'Shared flow'))));
+      if (bundle.pending.length) {
+        box.append(h('p', {class: 'meta'}, h('span', {class: 'badge'}, 'not recorded'), ' Changed by hand since the last step: ',
+          h('span', {class: 'mono'}, bundle.pending.join(', '))));
+      }
+      for (const step of bundle.steps) box.append(stepView(id, bundle, step));
+    }
+  }).catch(error => box.replaceChildren(errorBox(error)));
+  return box;
+}
+
+function stepView(id, bundle, step) {
+  const when = new Date(step.time).toLocaleString();
+  const details = h('details', {class: 'file'},
+    h('summary', {}, h('code', {}, step.id), h('span', {}, step.title),
+      h('span', {class: 'sub'}, when + (step.original ? '' : ' · ' + step.files.length + ' file(s)'))));
+  details.addEventListener('toggle', async () => {
+    if (!details.open || details.dataset.loaded) return;
+    details.dataset.loaded = 'true';
+    const message = step.message.split('\n').slice(1).join('\n').trim();
+    if (message) details.append(h('pre', {class: 'message'}, message));
+    if (step.original) {
+      details.append(h('p', {class: 'sub'}, 'The bundle as it was before any change: ' + step.files.length + ' file(s).'));
+      return;
+    }
+    details.append(h('div', {class: 'actions', style: 'margin:8px 0'},
+      h('button', {type: 'button', onclick: event => revert(event.target)}, 'Undo this step')));
+    try {
+      details.append(unifiedDiffView((await api.stepDiff(id, bundle.bundle, step.id)).diff));
+    } catch (error) {
+      details.append(errorBox(error));
+    }
+  });
+
+  async function revert(button) {
+    const ok = await confirmDialog('Undo step ' + step.id + '?',
+      'The changes of "' + step.title + '" are undone in ' + bundle.bundle + ' and recorded as a new step.', 'Undo');
+    if (!ok) return;
+    button.disabled = true;
+    try {
+      const done = await api.revertStep(id, bundle.bundle, step.id);
+      toast('Undone, recorded as step ' + done.id);
+      route();
+    } catch (error) {
+      toast(error.message, true);
+      button.disabled = false;
+    }
+  }
+  return details;
+}
+
+/** A git unified diff: file headers, hunk headers, added and removed lines. */
+function unifiedDiffView(text) {
+  const out = h('div', {class: 'diff'});
+  for (const line of text.replace(/\n$/, '').split('\n')) {
+    if (line.startsWith('diff --git ')) out.append(h('div', {class: 'file-head'}, line.slice(11).replace(/^a\/(\S+) b\/\S+$/, '$1')));
+    else if (/^(index |--- |\+\+\+ |new file|deleted file|similarity|rename )/.test(line)) continue;
+    else if (line.startsWith('@@')) out.append(h('div', {class: 'gap'}, line));
+    else if (line.startsWith('+')) out.append(h('div', {class: 'add'}, line.slice(1)));
+    else if (line.startsWith('-')) out.append(h('div', {class: 'del'}, line.slice(1)));
+    else out.append(h('div', {class: 'same'}, line.slice(1)));
+  }
+  return out;
 }
 
 function changesPanel(migration) {
@@ -424,6 +585,137 @@ function resourcesPanel(resources) {
   if (!resources.length) return empty('Nothing to create in hybrid for this proxy.');
   return h('div', {style: 'margin-top:16px'}, table(['Kind', 'Name', 'Details', 'Needed by'], resources.map(r => h('tr', {},
     h('td', {class: 'nowrap'}, r.kind), h('td', {}, h('code', {}, r.name)), h('td', {class: 'sub'}, r.details), h('td', {}, r.requiredBy)))));
+}
+
+const READ_STATUS = {
+  SET: ['ok', 'set earlier'], BUILT_IN: ['', 'built-in'], SET_LATER: ['bad', 'set later'],
+  UNSET: ['warn', 'set nowhere'], UNKNOWN: ['', 'maybe set'],
+};
+const READ_PROBLEMS = ['SET_LATER', 'UNSET', 'UNKNOWN'];
+const variableState = {id: null, flow: null, text: '', show: null, builtIn: false};
+
+/** The flow variables of the proxy, loaded once per proxy; the analysis takes a moment on large bundles. */
+function variablesPanel(id) {
+  const box = h('div', {}, h('div', {class: 'loading'}, 'Analysing the variables…'));
+  if (variableState.id !== id) Object.assign(variableState, {id, flow: api.variables(id), text: '', show: null});
+  variableState.flow.then(flow => box.replaceChildren(variablesView(flow)),
+    error => { variableState.id = null; box.replaceChildren(errorBox(error)); });
+  return box;
+}
+
+function variablesView(flow) {
+  const steps = flow.steps;
+  const reads = steps.flatMap(s => s.reads);
+  const total = source => reads.filter(r => r.source === source).length;
+  const problems = reads.filter(r => READ_PROBLEMS.includes(r.source)).length;
+  if (variableState.show === null) variableState.show = problems ? 'problems' : 'all';
+  // who reads what each step sets, to follow a variable forward
+  const readers = new Map();
+  for (const step of steps) {
+    for (const read of step.reads) {
+      for (const index of read.producerSteps) {
+        if (!readers.has(index)) readers.set(index, []);
+        readers.get(index).push({step, name: read.name});
+      }
+    }
+  }
+
+  const box = h('div', {});
+  box.append(cards([
+    [steps.length, 'Steps'], [total('SET'), 'Reads set earlier'], [total('BUILT_IN'), 'Built-in reads'],
+    [total('SET_LATER'), 'Set later'], [total('UNSET'), 'Set nowhere'], [total('UNKNOWN'), 'Maybe set'],
+  ]));
+  box.append(h('p', {class: 'meta', style: 'margin-top:16px'},
+    'Steps in the order Apigee runs them, with the variables each one reads and writes. ',
+    'Click a variable to follow it from the step that sets it to the steps that read it.'));
+
+  const search = h('input', {type: 'search', placeholder: 'Filter by variable or policy', value: variableState.text,
+    'aria-label': 'Filter by variable or policy', oninput: e => { variableState.text = e.target.value; fill(); }});
+  const filters = h('div', {class: 'chips'});
+  const list = h('div', {});
+
+  function follow(name) {
+    variableState.text = name;
+    variableState.show = 'all';
+    search.value = name;
+    fill();
+    search.scrollIntoView({block: 'nearest'});
+  }
+
+  const variable = (name, text) => h('button', {type: 'button', class: 'var' + (text && name.toLowerCase() === text ? ' hit' : ''),
+    title: 'Follow ' + name, onclick: () => follow(name)}, name);
+
+  function visibleReads(step, text) {
+    return step.reads.filter(r => r.source !== 'BUILT_IN' || variableState.builtIn || (text && r.name.toLowerCase().includes(text)));
+  }
+
+  function matches(step, text) {
+    if (variableState.show === 'problems' && !step.reads.some(r => READ_PROBLEMS.includes(r.source))) return false;
+    if (!text) return true;
+    return step.label.toLowerCase().includes(text)
+      || step.reads.some(r => r.name.toLowerCase().includes(text))
+      || step.writes.some(w => w.name.toLowerCase().includes(text));
+  }
+
+  function stepBlock(step, text) {
+    const rows = [];
+    for (const read of visibleReads(step, text)) {
+      const [cls, label] = READ_STATUS[read.source];
+      const from = read.producers.length
+        ? (read.source === 'SET_LATER' ? 'by ' : '← ') + [...new Set(read.producerSteps.map(i => steps.find(s => s.index === i)?.label ?? '?'))].join(', ')
+        : '';
+      rows.push(h('tr', {class: READ_PROBLEMS.includes(read.source) ? 'problem' : null},
+        h('td', {class: 'sub'}, 'reads'), h('td', {}, variable(read.name, text)),
+        h('td', {}, h('span', {class: 'badge ' + cls}, label), from ? ' ' + from : null,
+          read.note ? h('div', {class: 'note'}, read.note) : null),
+        h('td', {class: 'sub'}, read.via)));
+    }
+    for (const write of step.writes) {
+      rows.push(h('tr', {}, h('td', {class: 'sub'}, 'writes'), h('td', {}, variable(write.name, text)),
+        h('td', {}), h('td', {class: 'sub'}, write.via)));
+    }
+    const hidden = step.reads.length - visibleReads(step, text).length;
+    const readBy = readers.get(step.index) || [];
+    return h('div', {class: 'vstep'},
+      h('div', {class: 'vstep-head'},
+        h('b', {}, step.label),
+        step.type === 'RouteRule' ? null : h('span', {class: 'sub'}, step.type),
+        step.condition ? h('code', {class: 'cond'}, step.condition) : null,
+        step.opaque ? h('span', {class: 'badge warn', title: 'A Java callout, a script that builds variable names, or an unresolved shared flow'},
+          'may use variables it does not name') : null,
+        hidden ? h('span', {class: 'sub', style: 'margin-left:auto'}, hidden + ' built-in read(s) hidden') : null),
+      rows.length ? h('table', {class: 'vars'}, h('tbody', {}, rows)) : null,
+      readBy.length ? h('p', {class: 'sub readby'}, 'Read later by ',
+        readBy.map(({step: reader, name}, i) => [i ? ', ' : '', h('b', {}, reader.label), ' (', variable(name, text), ')'])) : null);
+  }
+
+  function fill() {
+    const text = variableState.text.trim().toLowerCase();
+    filters.replaceChildren(
+      chips([['problems', 'Reads to check (' + problems + ')'], ['all', 'All steps']], variableState.show,
+        value => { variableState.show = value; fill(); }),
+      h('label', {class: 'sub check'}, h('input', {type: 'checkbox', checked: variableState.builtIn,
+        onchange: e => { variableState.builtIn = e.target.checked; fill(); }}), ' Show built-in reads'));
+    const shown = steps.filter(s => matches(s, text));
+    const content = [];
+    let location = null;
+    for (const step of shown) {
+      if (step.location !== location) {
+        location = step.location;
+        content.push(h('h3', {class: 'mono'}, location));
+      }
+      content.push(stepBlock(step, text));
+    }
+    if (!shown.length) {
+      content.push(empty(variableState.show === 'problems' && !text
+        ? 'Every variable is set before the step that reads it.'
+        : 'No step matches the filter.'));
+    }
+    list.replaceChildren(...content);
+  }
+  fill();
+  box.append(h('div', {class: 'toolbar'}, search, filters), list);
+  return box;
 }
 
 function mapPanel(id) {
@@ -516,6 +808,27 @@ async function settingsView() {
       h('p', {class: 'hint'}, 'Searched for sharedflowbundle/ folders. Shared flows called by a proxy are analyzed and migrated with it.'),
       sharedList),
     folderField('outputDir', 'Output folder', 'Each migrated proxy is written to <output folder>/<proxy name>, with its shared flows. The source bundles are never modified.', data.checks.outputDir)));
+
+  // Token: kept in memory by the app, never shown again once saved
+  const tokenInput = h('input', {type: 'password', id: 'f-token', autocomplete: 'off', spellcheck: 'false',
+    oninput: () => { tokenButton.disabled = !tokenInput.value.trim(); }});
+  const tokenButton = h('button', {type: 'button', disabled: true, onclick: saveToken}, 'Save token');
+  page.append(h('section', {class: 'form-section'}, h('h2', {}, 'Access token'),
+    h('div', {class: 'field'}, h('label', {for: 'f-token'}, 'Token'),
+      h('p', {class: 'hint'}, 'Needed to propose fixes. Kept in memory only, never written to disk, and forgotten after 30 minutes or when the app stops.'),
+      h('div', {class: 'row'}, tokenInput, tokenButton))));
+
+  async function saveToken() {
+    tokenButton.disabled = true;
+    try {
+      await api.saveToken(tokenInput.value.trim());
+      tokenInput.value = '';
+      toast('Token saved');
+    } catch (error) {
+      toast(error.message, true);
+      tokenButton.disabled = false;
+    }
+  }
 
   function folderField(key, label, hint, check) {
     return h('div', {class: 'field'}, h('label', {for: 'f-' + key}, label), h('p', {class: 'hint'}, hint),

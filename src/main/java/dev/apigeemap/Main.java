@@ -23,6 +23,10 @@ public final class Main {
     private static final String USAGE = """
             Usage: apigee-map <bundle> [options]
                    apigee-map migrate <bundle> [options]   (Apigee hybrid migration, see migrate --help)
+                   apigee-map variables <bundle> [options] (flow variables step by step, see variables --help)
+                   apigee-map context <bundle> --rule <id> (what it takes to fix a finding, see context --help)
+                   apigee-map fix <bundle> --rule <id>     (asks the backend for the fix of a finding)
+                   apigee-map history <bundle> [options]   (steps of a bundle changed in place, see history --help)
                    apigee-map ui [options]                 (web UI, see ui --help)
 
               <bundle>                 apiproxy/ or sharedflowbundle/ folder, its parent folder, or a bundle .zip
@@ -40,12 +44,28 @@ public final class Main {
     }
 
     public static void main(String[] args) {
+        // The backend is reached through the proxy configured on the machine; set before any network use
+        if (System.getProperty("java.net.useSystemProxies") == null) {
+            System.setProperty("java.net.useSystemProxies", "true");
+        }
         System.exit(run(args, System.out, System.err));
     }
 
     static int run(String[] args, PrintStream out, PrintStream err) {
         if (args.length > 0 && args[0].equals("migrate")) {
             return MigrateCommand.run(Arrays.copyOfRange(args, 1, args.length), out, err);
+        }
+        if (args.length > 0 && args[0].equals("variables")) {
+            return VariablesCommand.run(Arrays.copyOfRange(args, 1, args.length), out, err);
+        }
+        if (args.length > 0 && args[0].equals("context")) {
+            return ContextCommand.run(Arrays.copyOfRange(args, 1, args.length), out, err);
+        }
+        if (args.length > 0 && args[0].equals("fix")) {
+            return FixCommand.run(Arrays.copyOfRange(args, 1, args.length), out, err);
+        }
+        if (args.length > 0 && args[0].equals("history")) {
+            return HistoryCommand.run(Arrays.copyOfRange(args, 1, args.length), out, err);
         }
         if (args.length > 0 && args[0].equals("ui")) {
             return UiCommand.run(Arrays.copyOfRange(args, 1, args.length), out, err);

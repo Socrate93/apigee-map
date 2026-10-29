@@ -1,4 +1,4 @@
-package dev.apigeemap.ui;
+package dev.apigeemap.protocol;
 
 import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
@@ -8,15 +8,15 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Minimal JSON support for the UI API, without dependencies. Parsing yields Map, List, String, Double, Boolean
- * or null; writing also accepts records (their components become fields), enums and any object via toString.
+ * Minimal JSON support, without dependencies. Parsing yields Map, List, String, Double, Boolean or null; writing
+ * also accepts records (their components become fields), enums and any object via toString.
  */
-final class Json {
+public final class Json {
 
     private Json() {
     }
 
-    static String write(Object value) {
+    public static String write(Object value) {
         StringBuilder out = new StringBuilder();
         write(value, out, "");
         return out.toString();
@@ -99,7 +99,7 @@ final class Json {
         out.append('"');
     }
 
-    static Object parse(String text) {
+    public static Object parse(String text) {
         Parser parser = new Parser(text);
         Object value = parser.value();
         parser.skipWhitespace();

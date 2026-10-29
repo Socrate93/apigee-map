@@ -30,6 +30,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * What a JavaScript policy script does with flow variables and outbound HTTP calls, read from the syntax tree of
@@ -61,7 +63,21 @@ public final class ScriptAnalyzer {
         }
     }
 
+    /** {@code flow.getVariable("name")} and friends in Python scripts. */
+    private static final Pattern PYTHON_VARIABLE = Pattern.compile(
+            "flow\\.(get|set|remove)Variable\\(\\s*(['\"])([^'\"]+)\\2");
+
     private ScriptAnalyzer() {
+    }
+
+    /** Variables of a Python script policy, by a text search (there is no Python parser here). */
+    public static Facts analyzePython(String source) {
+        Set<String> reads = new LinkedHashSet<>();
+        Set<String> writes = new LinkedHashSet<>();
+        Matcher matcher = PYTHON_VARIABLE.matcher(source);
+        while (matcher.find()) (matcher.group(1).equals("get") ? reads : writes).add(matcher.group(3));
+        return new Facts(List.copyOf(reads), List.copyOf(writes), false, false, List.of(), List.of(), false, false,
+                null);
     }
 
     /**
@@ -81,6 +97,21 @@ public final class ScriptAnalyzer {
         }
         String inline = Xml.text(policy, "Source");
         if (inline != null) scripts.put("inline", inline);
+        return scripts;
+    }
+
+    /** Scripts of a Python Script policy that are in the bundle, by bundle-relative path. */
+    public static Map<String, String> pythonScripts(Path bundleDir, Element policy) throws IOException {
+        Map<String, String> scripts = new LinkedHashMap<>();
+        List<Element> urls = new ArrayList<>(Xml.children(policy, "IncludeURL"));
+        urls.addAll(Xml.children(policy, "ResourceURL"));
+        for (Element url : urls) {
+            String value = Xml.text(url);
+            if (value == null || !value.startsWith("py://")) continue;
+            String file = "resources/py/" + value.substring("py://".length());
+            Path path = bundleDir.resolve(file);
+            if (Files.isRegularFile(path)) scripts.put(file, Files.readString(path));
+        }
         return scripts;
     }
 

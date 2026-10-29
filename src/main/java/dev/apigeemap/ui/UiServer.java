@@ -2,6 +2,9 @@ package dev.apigeemap.ui;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import dev.apigeemap.history.SourceHistory;
+import dev.apigeemap.protocol.BackendConfig;
+import dev.apigeemap.protocol.Json;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -41,6 +44,14 @@ public final class UiServer {
 
     /** Starts on the given port, or on a free one when it is taken; port 0 always picks a free port. */
     public static UiServer start(Path settingsFile, int port) throws IOException {
+        return start(settingsFile, SourceHistory.defaultRoot(), BackendConfig.defaultFile(), port);
+    }
+
+    /**
+     * @param historyRoot   where the histories of bundles changed in place are kept
+     * @param backendConfig the backend settings fixes are asked with
+     */
+    public static UiServer start(Path settingsFile, Path historyRoot, Path backendConfig, int port) throws IOException {
         InetAddress loopback = InetAddress.getLoopbackAddress();
         HttpServer http;
         try {
@@ -48,7 +59,7 @@ public final class UiServer {
         } catch (BindException e) {
             http = HttpServer.create(new InetSocketAddress(loopback, 0), 0);
         }
-        UiServer ui = new UiServer(new UiService(settingsFile), http);
+        UiServer ui = new UiServer(new UiService(settingsFile, historyRoot, backendConfig), http);
         http.createContext("/", ui::handle);
         http.setExecutor(Executors.newFixedThreadPool(4));
         http.start();
@@ -100,8 +111,14 @@ public final class UiServer {
                 service.save(Settings.fromJson(Json.parse(body(exchange))));
                 json(exchange, 200, settingsPayload());
             }
+            case "PUT /api/token" -> {
+                Object typed = Json.parse(body(exchange)) instanceof Map<?, ?> map ? map.get("token") : null;
+                service.setToken(typed instanceof String text ? text : null);
+                json(exchange, 200, Map.of());
+            }
             case "GET /api/proxies" -> json(exchange, 200, service.proxies());
             case "GET /api/proxy" -> json(exchange, 200, service.proxy(query.get("id")));
+            case "GET /api/variables" -> json(exchange, 200, service.variables(query.get("id")));
             case "GET /api/map" -> send(exchange, 200, "text/html", service.mapHtml(query.get("id")));
             case "GET /api/report" -> {
                 exchange.getResponseHeaders().add("Content-Disposition", "attachment; filename=\"migration-"
@@ -111,6 +128,18 @@ public final class UiServer {
             case "POST /api/apply" -> json(exchange, 200,
                     service.apply(query.get("id"), "true".equals(query.get("overwrite"))));
             case "GET /api/overview" -> json(exchange, 200, service.overview());
+            case "POST /api/fix" -> json(exchange, 200,
+                    service.proposeFix(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
+            case "POST /api/fix/accept" -> json(exchange, 200, service.acceptFix(query.get("proposal")));
+            case "POST /api/fix/reject" -> {
+                service.rejectFix(query.get("proposal"));
+                json(exchange, 200, Map.of());
+            }
+            case "GET /api/history" -> json(exchange, 200, service.history(query.get("id")));
+            case "GET /api/history/diff" -> json(exchange, 200,
+                    Map.of("diff", service.historyDiff(query.get("id"), query.get("bundle"), query.get("step"))));
+            case "POST /api/history/revert" -> json(exchange, 200,
+                    service.revertStep(query.get("id"), query.get("bundle"), query.get("step")));
             default -> json(exchange, 404, Map.of("error", "Not found: " + method + " " + path));
         }
     }

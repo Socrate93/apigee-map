@@ -52,7 +52,7 @@ final class PerformanceRules {
         String action = "Attach the logging to the ProxyEndpoint PostClientFlow so it runs after the response is sent.";
         for (Policy policy : ctx.policies("MessageLogging")) {
             String flows = blockingFlows(policy);
-            if (flows != null) ctx.manual(WARN, policy.name(), "MessageLogging runs in " + flows, action);
+            if (flows != null) ctx.manual(WARN, policy.name(), "MessageLogging runs in " + flows, action, ctx.on(policy));
         }
         for (Policy policy : ctx.policies("FlowCallout")) {
             String flows = blockingFlows(policy);
@@ -61,8 +61,16 @@ final class PerformanceRules {
             List<String> chain = loggingChain(ctx, sharedFlow, new HashSet<>());
             if (chain == null) continue;
             ctx.manual(WARN, policy.name(), "Logs through " + String.join(" › ", chain) + " from " + flows,
-                    action + " Split the logging out of the shared flow if it also does other work.");
+                    action + " Split the logging out of the shared flow if it also does other work.",
+                    subjects(ctx, policy, chain));
         }
+    }
+
+    /** The FlowCallout and the MessageLogging policy at the end of the chain of shared flows. */
+    private static List<Finding.Subject> subjects(MigrationContext ctx, Policy callout, List<String> chain) {
+        List<Finding.Subject> subjects = new ArrayList<>(ctx.on(callout));
+        subjects.addAll(ctx.onPolicies(chain.get(chain.size() - 2), List.of(chain.get(chain.size() - 1))));
+        return subjects;
     }
 
     /** Flows other than PostClientFlow the policy runs in, or null. */
@@ -105,7 +113,8 @@ final class PerformanceRules {
                     : script.source().contains("httpClient") && script.source().contains("waitForComplete");
             if (!blocking || !reported.add(script.policy())) continue;
             ctx.manual(WARN, script.policy(), "JavaScript calls httpClient and blocks on waitForComplete()",
-                    "Use a ServiceCallout, or the callback form of httpClient.send without waitForComplete().");
+                    "Use a ServiceCallout, or the callback form of httpClient.send without waitForComplete().",
+                    ctx.on(script));
         }
     }
 
@@ -116,7 +125,8 @@ final class PerformanceRules {
             String code = COMMENTS.matcher(script).replaceAll("");
             if (!code.contains("setVariable") || !SET_LITERAL.matcher(code).replaceAll("").isBlank()) continue;
             ctx.manual(INFO, policy.name(), "JavaScript only assigns literal values to variables",
-                    "Replace it with an AssignMessage policy (AssignVariable): no script engine call per request.");
+                    "Replace it with an AssignMessage policy (AssignVariable): no script engine call per request.",
+                    ctx.on(policy));
         }
     }
 
@@ -124,7 +134,8 @@ final class PerformanceRules {
         for (Policy policy : ctx.policies("Script")) {
             if (!policy.attached()) continue;
             ctx.manual(WARN, policy.name(), "Python Script policy runs on an embedded Jython interpreter",
-                    "Rewrite it in JavaScript or as a Java callout: Jython is slow and limited to Python 2 syntax.");
+                    "Rewrite it in JavaScript or as a Java callout: Jython is slow and limited to Python 2 syntax.",
+                    ctx.on(policy));
         }
     }
 
@@ -139,12 +150,12 @@ final class PerformanceRules {
             if (!"true".equalsIgnoreCase(distributed)) {
                 ctx.manual(WARN, policy.name(), "Quota is not distributed: each runtime instance counts on its own",
                         "Set <Distributed>true</Distributed>, or the effective limit grows with the number of"
-                                + " runtime pods.");
+                                + " runtime pods.", ctx.on(policy));
             }
             if ("true".equalsIgnoreCase(Xml.text(ctx.xml(policy), "Synchronous"))) {
                 ctx.manual(WARN, policy.name(), "Quota updates its counter synchronously on every call",
                         "Remove <Synchronous>true</Synchronous> unless the limit must be exact: the default"
-                                + " asynchronous update avoids the extra latency.");
+                                + " asynchronous update avoids the extra latency.", ctx.on(policy));
             }
         }
     }
@@ -155,7 +166,7 @@ final class PerformanceRules {
                 if (!policy.attached() || Xml.path(ctx.xml(policy), "ExpirySettings") != null) continue;
                 ctx.manual(WARN, policy.name(), type + " has no ExpirySettings",
                         "Set ExpirySettings (TimeoutInSec, TimeOfDay or ExpiryDate): entries without one stay"
-                                + " until evicted and can serve stale data.");
+                                + " until evicted and can serve stale data.", ctx.on(policy));
             }
         }
     }
