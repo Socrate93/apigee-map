@@ -8,7 +8,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
+import java.net.Authenticator;
 import java.net.InetSocketAddress;
+import java.net.PasswordAuthentication;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
@@ -18,6 +20,7 @@ import java.util.Map;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -38,6 +41,26 @@ class BackendClientTest {
                 "token", request.get("token"), "body", request.get("body"))));
         Object body = client("secret-token").call("fix", Map.of("from", "test"));
         assertEquals(Map.of("type", "fix", "token", "secret-token", "body", Map.of("from", "test")), body);
+    }
+
+    /** The proxy credentials of the system properties go to the proxy only. */
+    @Test
+    void answersTheProxyWithTheCredentialsOfTheSystemProperties() {
+        assertNull(BackendClient.proxyAuthenticator(), "no user, no authenticator");
+        System.setProperty("https.proxyUser", "jdoe");
+        System.setProperty("https.proxyPassword", "secret");
+        try {
+            Authenticator authenticator = BackendClient.proxyAuthenticator();
+            PasswordAuthentication proxy = authenticator.requestPasswordAuthenticationInstance("proxy.corp", null,
+                    3128, "http", "realm", "Basic", null, Authenticator.RequestorType.PROXY);
+            assertEquals("jdoe", proxy.getUserName());
+            assertEquals("secret", new String(proxy.getPassword()));
+            assertNull(authenticator.requestPasswordAuthenticationInstance("backend", null, 443, "https", "realm",
+                    "Basic", null, Authenticator.RequestorType.SERVER), "never sent to the backend");
+        } finally {
+            System.clearProperty("https.proxyUser");
+            System.clearProperty("https.proxyPassword");
+        }
     }
 
     /** The console gets the stack trace of a backend out of reach, and one line for a refusal. */

@@ -2,6 +2,8 @@ package dev.apigeemap.protocol;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.net.Authenticator;
+import java.net.PasswordAuthentication;
 import java.net.ProxySelector;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -39,22 +41,58 @@ public final class BackendClient {
     private final HttpClient http;
     private final RuntimeException tlsFailure;
 
+    static {
+        // Java refuses Basic on the proxy of an HTTPS call unless told otherwise; read once, by the first HTTP client
+        if (proxyCredential("proxyUser") != null
+                && System.getProperty("jdk.http.auth.tunneling.disabledSchemes") == null) {
+            System.setProperty("jdk.http.auth.tunneling.disabledSchemes", "");
+        }
+    }
+
     public BackendClient(BackendConfig config) {
         this.config = config;
         HttpClient client = null;
         RuntimeException failure = null;
         try {
-            client = HttpClient.newBuilder()
+            HttpClient.Builder builder = HttpClient.newBuilder()
                     .version(HttpClient.Version.HTTP_1_1)
                     .connectTimeout(Duration.ofSeconds(15))
                     .proxy(ProxySelector.getDefault())
-                    .sslContext(Trust.context())
-                    .build();
+                    .sslContext(Trust.context());
+            Authenticator proxyAuthenticator = proxyAuthenticator();
+            if (proxyAuthenticator != null) builder.authenticator(proxyAuthenticator);
+            client = builder.build();
         } catch (IllegalStateException e) {
             failure = e;
         }
         this.http = client;
         this.tlsFailure = failure;
+    }
+
+    /**
+     * Answers the proxy with {@code https.proxyUser} and {@code https.proxyPassword} (or their {@code http.} variants),
+     * and nobody else; null without a user. The proxy itself comes from {@code https.proxyHost} and
+     * {@code https.proxyPort}, or from the machine with {@code java.net.useSystemProxies=true}.
+     */
+    static Authenticator proxyAuthenticator() {
+        String user = proxyCredential("proxyUser");
+        if (user == null) return null;
+        String password = proxyCredential("proxyPassword");
+        return new Authenticator() {
+            @Override
+            protected PasswordAuthentication getPasswordAuthentication() {
+                return getRequestorType() != RequestorType.PROXY ? null
+                        : new PasswordAuthentication(user, password == null ? new char[0] : password.toCharArray());
+            }
+        };
+    }
+
+    private static String proxyCredential(String name) {
+        for (String scheme : new String[]{"https.", "http."}) {
+            String value = System.getProperty(scheme + name);
+            if (value != null && !value.isEmpty()) return value;
+        }
+        return null;
     }
 
     /**
@@ -80,6 +118,9 @@ public final class BackendClient {
 
         HttpResponse<byte[]> response = send(sealed.wire());
         // The backend always answers 200: another status comes from something on the way (wrong url, proxy, outage)
+        if (response.statusCode() == 407) {
+            throw new IOException("The proxy wants credentials (HTTP 407): set https.proxyUser and https.proxyPassword");
+        }
         if (response.statusCode() != 200) {
             throw new IOException("No backend at " + config.url() + " (HTTP " + response.statusCode()
                     + "): check the url of the backend settings");
