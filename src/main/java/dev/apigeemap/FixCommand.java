@@ -39,7 +39,7 @@ final class FixCommand {
                   --at <text>          only the findings whose location contains this text (when the rule has several)
               -s, --sharedflows <dir>  folder containing shared flows, repeatable
               -o, --output <file>      also write the proposal as JSON
-                  --config <file>      backend settings (default ~/.apigee-map/backend.properties)
+                  --config <file>      backend settings (default ~/.apigee-map/backend.properties, else those of the jar)
               -h, --help               show this help
             """;
 

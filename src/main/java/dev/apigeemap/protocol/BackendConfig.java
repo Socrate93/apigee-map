@@ -1,6 +1,7 @@
 package dev.apigeemap.protocol;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.Reader;
 import java.net.InetAddress;
 import java.net.URI;
@@ -13,8 +14,9 @@ import java.util.List;
 import java.util.Properties;
 
 /**
- * Where the app finds the backend, read from a properties file (by default {@code ~/.apigee-map/backend.properties}),
- * and the client token, which is never written to a file: the user types it.
+ * Where the app finds the backend, read from a properties file (by default {@code ~/.apigee-map/backend.properties},
+ * or the {@code backend.properties} of the jar when it does not exist), and the client token, which is never written to
+ * a file: the user types it.
  *
  * @param url       base URL of the backend; HTTPS unless it is on this machine
  * @param publicKey public key of the backend, printed by its keygen command
@@ -29,6 +31,9 @@ public record BackendConfig(URI url, PublicKey publicKey, String token) {
         if (token == null || token.isBlank()) throw new IllegalArgumentException("No token");
     }
 
+    /** The settings of the jar, used when the default file does not exist. */
+    private static final String BUILT_IN = "/backend.properties";
+
     public static Path defaultFile() {
         return Path.of(System.getProperty("user.home"), ".apigee-map", "backend.properties");
     }
@@ -38,12 +43,17 @@ public record BackendConfig(URI url, PublicKey publicKey, String token) {
      * token, a random one is sent all the same: the backend refuses it, but the request looks like any other.
      */
     public static BackendConfig load(Path file, String token) throws IOException {
-        if (!Files.isRegularFile(file)) {
-            throw new IOException("No backend settings in " + file + " (url and publicKey)");
-        }
         Properties properties = new Properties();
-        try (Reader reader = Files.newBufferedReader(file)) {
-            properties.load(reader);
+        if (Files.isRegularFile(file)) {
+            try (Reader reader = Files.newBufferedReader(file)) {
+                properties.load(reader);
+            }
+        } else if (file.equals(defaultFile()) && BackendConfig.class.getResource(BUILT_IN) != null) {
+            try (InputStream in = BackendConfig.class.getResourceAsStream(BUILT_IN)) {
+                properties.load(in);
+            }
+        } else {
+            throw new IOException("No backend settings in " + file + " (url and publicKey)");
         }
         List<String> missing = new ArrayList<>();
         for (String key : List.of("url", "publicKey")) {
