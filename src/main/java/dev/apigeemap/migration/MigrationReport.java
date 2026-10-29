@@ -15,6 +15,11 @@ public record MigrationReport(String name, boolean applied, String outputDir, Li
         return bundles.stream().flatMap(b -> b.findings().stream()).toList();
     }
 
+    /** Findings left out as false positives, not counted anywhere. */
+    public List<FalsePositive.Hidden> falsePositives() {
+        return bundles.stream().flatMap(b -> b.falsePositives().stream()).toList();
+    }
+
     /** True when an ERROR still blocks the deployment: a manual one, or any one in dry run. */
     public boolean hasOpenErrors() {
         return findings().stream().anyMatch(f -> f.severity() == Issue.Severity.ERROR

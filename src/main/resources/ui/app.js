@@ -55,6 +55,9 @@ const api = {
     .then(data => { if (data.error) throw new Error(data.error); return data; }),
   acceptFix: proposal => request('POST', '/api/fix/accept?proposal=' + encodeURIComponent(proposal)),
   rejectFix: proposal => request('POST', '/api/fix/reject?proposal=' + encodeURIComponent(proposal)),
+  markFalsePositive: (finding, reason) => request('POST', '/api/false-positive',
+    {rule: finding.rule, bundle: finding.bundle, location: finding.location, reason}),
+  unmarkFalsePositive: f => request('POST', '/api/false-positive/remove', {rule: f.rule, bundle: f.bundle, location: f.location}),
   history: id => request('GET', '/api/history?id=' + encodeURIComponent(id)),
   stepDiff: (id, bundle, step) => request('GET', '/api/history/diff?' + stepQuery(id, bundle, step)),
   revertStep: (id, bundle, step) => request('POST', '/api/history/revert?' + stepQuery(id, bundle, step)),
@@ -84,6 +87,24 @@ function confirmDialog(title, message, confirmLabel) {
     dialog.addEventListener('close', () => { dialog.remove(); resolve(false); });
     document.body.append(dialog);
     dialog.showModal();
+  });
+}
+
+/** Asks for a text that cannot be blank; resolves to it, or to null when cancelled. */
+function textDialog(title, message, label, confirmLabel) {
+  return new Promise(resolve => {
+    const input = h('textarea', {rows: 3, 'aria-label': label, placeholder: label,
+      oninput: () => { confirmButton.disabled = !input.value.trim(); }});
+    const confirmButton = h('button', {type: 'button', class: 'primary', disabled: true,
+      onclick: () => { const text = input.value.trim(); dialog.close(); resolve(text); }}, confirmLabel);
+    const dialog = h('dialog', {},
+      h('h2', {}, title), h('p', {}, message), input,
+      h('div', {class: 'actions'},
+        h('button', {type: 'button', onclick: () => { dialog.close(); resolve(null); }}, 'Cancel'), confirmButton));
+    dialog.addEventListener('close', () => { dialog.remove(); resolve(null); });
+    document.body.append(dialog);
+    dialog.showModal();
+    input.focus();
   });
 }
 
@@ -282,6 +303,8 @@ async function proxyView(id) {
   ]));
 
   const findings = migration.bundles.flatMap(b => b.findings);
+  const falsePositives = migration.bundles.flatMap(b => b.falsePositives);
+  const stale = migration.bundles.flatMap(b => b.staleFalsePositives);
   const files = migration.bundles.flatMap(b => b.files);
   const tabs = [
     ['findings', 'Findings', findings.length],
@@ -298,7 +321,7 @@ async function proxyView(id) {
     tabBar.replaceChildren(...tabs.map(([key, label, n]) => h('button', {type: 'button', role: 'tab',
         class: key === tab ? 'on' : '', 'aria-selected': String(key === tab), onclick: () => showTab(key)},
       label, n === null ? null : h('span', {class: 'count'}, n))));
-    const render = {findings: () => findingsPanel(id, findings, migration.applied), changes: () => changesPanel(migration),
+    const render = {findings: () => findingsPanel(id, findings, migration.applied, falsePositives, stale), changes: () => changesPanel(migration),
       resources: () => resourcesPanel(migration.resources), variables: () => variablesPanel(id), map: () => mapPanel(id),
       history: () => historyPanel(id)}[tab];
     panel.replaceChildren(render());
@@ -328,9 +351,10 @@ async function applyMigration(id, summary, outputDir, button) {
   }
 }
 
-function findingsPanel(id, findings, applied) {
+function findingsPanel(id, findings, applied, falsePositives, stale) {
+  const marked = falsePositivesSection(falsePositives, stale);
+  if (!findings.length) return h('div', {}, empty('No findings: nothing to change for hybrid.'), marked);
   const box = h('div', {});
-  if (!findings.length) return empty('No findings: nothing to change for hybrid.');
   const filters = h('div', {class: 'toolbar'});
   const body = h('tbody', {});
   function render() {
@@ -353,17 +377,68 @@ function findingsPanel(id, findings, applied) {
         h('td', {}, f.message),
         h('td', {class: 'sub'}, f.action),
         h('td', {}, fixBadge(f, applied)),
-        h('td', {class: 'nowrap'}, f.fix === 'MANUAL'
-          ? h('button', {type: 'button', title: 'Get a proposed fix for this finding and review it before it is written',
-              onclick: () => fixDialog(id, f)}, 'Propose a fix')
-          : null)));
+        h('td', {}, h('div', {class: 'row-actions'},
+          f.fix === 'MANUAL'
+            ? h('button', {type: 'button', title: 'Get a proposed fix for this finding and review it before it is written',
+                onclick: () => fixDialog(id, f)}, 'Propose a fix')
+            : null,
+          h('button', {type: 'button', title: 'Stop reporting this finding' + (f.fix === 'AUTO' ? ' and do not apply its automatic fix' : ''),
+            onclick: () => markFalsePositive(f)}, 'False positive')))));
     body.replaceChildren(...(rows.length ? rows : [h('tr', {}, h('td', {colspan: 8, class: 'sub'}, 'No finding matches the filter.'))]));
   }
   render();
   box.append(filters, h('div', {class: 'wrap'}, h('table', {style: 'min-width:1060px'},
     h('thead', {}, h('tr', {}, ['Severity', 'Rule', 'Bundle', 'Where', 'Finding', 'What to do', 'Fix', ''].map(t => h('th', {}, t)))),
-    body)));
+    body)), marked);
   return box;
+}
+
+async function markFalsePositive(finding) {
+  const where = finding.bundle + ' · ' + finding.location;
+  const reason = await textDialog('Mark as a false positive',
+    finding.rule + ' at ' + where + ' will no longer be reported nor counted'
+      + (finding.fix === 'AUTO' ? ', and its automatic fix will not be applied' : '')
+      + '. Every finding of this rule at this place is covered. You can report it again at any time.',
+    'Why this is not a problem', 'Mark as false positive');
+  if (reason === null) return;
+  try {
+    await api.markFalsePositive(finding, reason);
+    toast(finding.rule + ' at ' + where + ' marked as a false positive');
+    route();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function unmarkFalsePositive(falsePositive) {
+  try {
+    await api.unmarkFalsePositive(falsePositive);
+    toast(falsePositive.rule + ' at ' + falsePositive.bundle + ' · ' + falsePositive.location + ' is reported again');
+    route();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+/** The findings marked as false positives, and those that no longer match anything; null when there are none. */
+function falsePositivesSection(falsePositives, stale) {
+  if (!falsePositives.length && !stale.length) return null;
+  const rows = [
+    ...falsePositives.map(({finding: f, reason}) => h('tr', {},
+      h('td', {class: 'nowrap'}, h('code', {}, f.rule)), h('td', {}, f.bundle), h('td', {}, h('code', {}, f.location)),
+      h('td', {}, f.message), h('td', {class: 'sub'}, reason),
+      h('td', {class: 'nowrap'}, h('button', {type: 'button', onclick: () => unmarkFalsePositive(f)}, 'Report again')))),
+    ...stale.map(f => h('tr', {},
+      h('td', {class: 'nowrap'}, h('code', {}, f.rule)), h('td', {}, f.bundle), h('td', {}, h('code', {}, f.location)),
+      h('td', {}, h('span', {class: 'badge'}, 'no longer found'), ' ', h('span', {class: 'sub'},
+        'The finding is gone, or its rule is disabled.')),
+      h('td', {class: 'sub'}, f.reason),
+      h('td', {class: 'nowrap'}, h('button', {type: 'button', onclick: () => unmarkFalsePositive(f)}, 'Remove')))),
+  ];
+  return h('details', {class: 'false-positives'},
+    h('summary', {}, 'Marked as false positives', h('span', {class: 'count'}, falsePositives.length + stale.length)),
+    h('p', {class: 'meta'}, 'Not reported nor counted, and their automatic fixes are not applied.'),
+    table(['Rule', 'Bundle', 'Where', 'Finding', 'Why', ''], rows));
 }
 
 /**
@@ -879,6 +954,24 @@ async function settingsView() {
           changed();
         }})))))));
 
+  // False positives
+  draft.falsePositives = [...(draft.falsePositives || [])];
+  const falsePositivesBox = h('div', {});
+  function renderFalsePositives() {
+    falsePositivesBox.replaceChildren(draft.falsePositives.length
+      ? table(['Rule', 'Bundle', 'Where', 'Why', ''], draft.falsePositives.map((f, index) => h('tr', {},
+        h('td', {class: 'nowrap'}, h('code', {}, f.rule)), h('td', {}, f.bundle), h('td', {}, h('code', {}, f.location)),
+        h('td', {class: 'sub'}, f.reason),
+        h('td', {class: 'nowrap'}, h('button', {type: 'button', 'aria-label': 'Remove false positive ' + f.rule + ' at ' + f.location,
+          onclick: () => { draft.falsePositives.splice(index, 1); renderFalsePositives(); changed(); }}, 'Remove')))))
+      : h('p', {class: 'sub'}, 'None. Mark one from the Findings tab of a proxy.'));
+  }
+  renderFalsePositives();
+  page.append(h('section', {class: 'form-section'}, h('h2', {}, 'False positives'),
+    h('p', {class: 'meta', style: 'margin:-4px 0 12px'},
+      'Findings no longer reported nor counted, and whose automatic fixes are not applied. A finding of a shared flow is covered in every proxy that calls it.'),
+    falsePositivesBox));
+
   page.append(h('div', {class: 'savebar'}, h('div', {},
     h('span', {class: 'sub', title: data.file}, 'Saved in ' + data.file), discardButton, saveButton)));
   changed();
@@ -906,6 +999,7 @@ function normalize(settings) {
     disabledRules: [...(settings.disabledRules || [])].sort(),
     severities: Object.fromEntries(Object.entries(settings.severities || {}).sort()),
     namingPrefixes: Object.fromEntries(Object.entries(settings.namingPrefixes || {}).sort()),
+    falsePositives: (settings.falsePositives || []).map(({rule, bundle, location, reason}) => ({rule, bundle, location, reason})),
   };
 }
 

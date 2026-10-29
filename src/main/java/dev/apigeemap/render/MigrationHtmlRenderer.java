@@ -2,6 +2,7 @@ package dev.apigeemap.render;
 
 import dev.apigeemap.migration.BundleMigration;
 import dev.apigeemap.migration.EnvResource;
+import dev.apigeemap.migration.FalsePositive;
 import dev.apigeemap.migration.Finding;
 import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.model.Issue;
@@ -81,6 +82,21 @@ public final class MigrationHtmlRenderer {
                         .append("</td><td class=\"action\">").append(esc(f.action())).append("</td><td><span class=\"fix ")
                         .append(f.fix() == Finding.Fix.AUTO ? "auto" : "manual").append("\">").append(fix)
                         .append("</span></td></tr>\n");
+            }
+            out.append("</table></div>\n");
+        }
+
+        List<FalsePositive.Hidden> falsePositives = report.falsePositives();
+        if (!falsePositives.isEmpty()) {
+            out.append("<h2>Marked as false positives</h2>");
+            out.append("<div class=\"wrap\"><table><tr><th>Rule</th><th>Bundle</th><th>Where</th><th>Finding</th>")
+                    .append("<th>Why</th></tr>\n");
+            for (FalsePositive.Hidden hidden : falsePositives) {
+                Finding f = hidden.finding();
+                out.append("<tr><td><code>").append(f.rule()).append("</code></td><td>").append(esc(f.bundle()))
+                        .append("</td><td><code>").append(esc(f.location())).append("</code></td><td>")
+                        .append(esc(f.message())).append("</td><td class=\"action\">").append(esc(hidden.reason()))
+                        .append("</td></tr>\n");
             }
             out.append("</table></div>\n");
         }

@@ -111,6 +111,14 @@ public final class UiServer {
                 service.save(Settings.fromJson(Json.parse(body(exchange))));
                 json(exchange, 200, settingsPayload());
             }
+            case "POST /api/false-positive" -> {
+                service.markFalsePositive((Map<?, ?>) Json.parse(body(exchange)));
+                json(exchange, 200, Map.of());
+            }
+            case "POST /api/false-positive/remove" -> {
+                service.unmarkFalsePositive((Map<?, ?>) Json.parse(body(exchange)));
+                json(exchange, 200, Map.of());
+            }
             case "PUT /api/token" -> {
                 Object typed = Json.parse(body(exchange)) instanceof Map<?, ?> map ? map.get("token") : null;
                 service.setToken(typed instanceof String text ? text : null);

@@ -36,7 +36,7 @@ class UiServerTest {
     void start() throws IOException {
         Path settings = tmp.resolve("settings.json");
         new Settings(EXAMPLES.toString(), List.of(EXAMPLES.resolve("sharedflows").toString()),
-                tmp.resolve("out").toString(), List.of(), Map.of(), Map.of()).save(settings);
+                tmp.resolve("out").toString(), List.of(), Map.of(), Map.of(), List.of()).save(settings);
         server = UiServer.start(settings, 0);
     }
 
@@ -69,6 +69,26 @@ class UiServerTest {
         assertTrue(json.contains("\"path\": \"targets/legacy.xml\""));
         assertTrue(json.contains("ts-legacy-orders-internal-8080"));
         assertFalse(Files.exists(tmp.resolve("out")));
+    }
+
+    @Test
+    void marksAFindingAsAFalsePositiveAndReportsItAgain() throws Exception {
+        String finding = "{\"rule\": \"DES-01\", \"bundle\": \"orders-api\", \"location\": \"TargetEndpoint legacy\"";
+        assertEquals(400, send("POST", "/api/false-positive", finding + ", \"reason\": \" \"}", true).statusCode(),
+                "a reason is required");
+        assertEquals(200, send("POST", "/api/false-positive", finding + ", \"reason\": \"same host\"}", true)
+                .statusCode());
+
+        String detail = Json.write(Json.parse(get("/api/proxy?id=orders-api").body()));
+        assertFalse(detail.contains("\"path\": \"targets/legacy.xml\""), "the auto-fix is not applied");
+        assertTrue(detail.contains("\"reason\": \"same host\""));
+        assertTrue(Files.readString(tmp.resolve("settings.json")).contains("same host"));
+        // saving the Settings screen keeps them
+        assertTrue(Json.write(Json.parse(get("/api/settings").body())).contains("\"falsePositives\""));
+
+        assertEquals(200, send("POST", "/api/false-positive/remove", finding + "}", true).statusCode());
+        assertTrue(Json.write(Json.parse(get("/api/proxy?id=orders-api").body()))
+                .contains("\"path\": \"targets/legacy.xml\""));
     }
 
     @Test

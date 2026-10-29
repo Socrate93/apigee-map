@@ -115,7 +115,8 @@ public final class Migrator {
                 output = target.toString();
             }
             results.add(new BundleMigration(bundle.name(), bundle.type(), bundle.path(), output, ctx.findings(),
-                    workspace.changes(), listener != null ? List.copyOf(applied.values()) : workspace.preview()));
+                    workspace.changes(), listener != null ? List.copyOf(applied.values()) : workspace.preview(),
+                    ctx.hidden(), ctx.unmatched()));
         }
         if (outputDir != null && !targetServers.isEmpty()) {
             Files.writeString(outputDir.resolve("targetservers.json"), targetServersJson(targetServers.values()));

@@ -55,7 +55,7 @@ class UiFixTest {
         startBackend();
         Path settings = tmp.resolve("settings.json");
         new Settings(tmp.resolve("proxies").toString(), List.of(), tmp.resolve("out").toString(), List.of(), Map.of(),
-                Map.of()).save(settings);
+                Map.of(), List.of()).save(settings);
         Path config = tmp.resolve("backend.properties");
         Files.writeString(config, "url=http://127.0.0.1:" + backend.getAddress().getPort() + "\npublicKey="
                 + Keys.encode(keys.getPublic()) + "\n");

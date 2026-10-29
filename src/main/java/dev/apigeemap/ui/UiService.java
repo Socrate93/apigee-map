@@ -111,6 +111,17 @@ final class UiService {
         settings = updated;
     }
 
+    /** Marks a finding as a false positive, from {@code {rule, bundle, location, reason}}, and saves the settings. */
+    synchronized void markFalsePositive(Map<?, ?> map) throws IOException {
+        save(settings.withFalsePositive(Settings.falsePositive(map)));
+    }
+
+    /** Reports the finding of {@code {rule, bundle, location}} again, and saves the settings. */
+    synchronized void unmarkFalsePositive(Map<?, ?> map) throws IOException {
+        save(settings.withoutFalsePositive(String.valueOf(map.get("rule")), String.valueOf(map.get("bundle")),
+                String.valueOf(map.get("location"))));
+    }
+
     /** Keeps the client token in memory, never in a file; a blank one forgets it. */
     void setToken(String value) {
         token.set(value);

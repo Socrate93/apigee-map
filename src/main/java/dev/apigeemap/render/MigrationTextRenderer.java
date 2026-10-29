@@ -2,6 +2,7 @@ package dev.apigeemap.render;
 
 import dev.apigeemap.migration.BundleMigration;
 import dev.apigeemap.migration.EnvResource;
+import dev.apigeemap.migration.FalsePositive;
 import dev.apigeemap.migration.Finding;
 import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.model.Issue;
@@ -40,6 +41,12 @@ public final class MigrationTextRenderer {
                 out.append(String.format("  %-5s %-7s %-6s %s: %s%n", finding.severity(), finding.rule(),
                         fixLabel(finding, report.applied()), finding.location(), finding.message()));
                 out.append("                       → ").append(finding.action()).append('\n');
+            }
+            for (FalsePositive.Hidden hidden : bundle.falsePositives()) {
+                Finding finding = hidden.finding();
+                out.append(String.format("  %-5s %-7s %-6s %s: %s%n", "-", finding.rule(), "false+",
+                        finding.location(), finding.message()));
+                out.append("                       → marked as a false positive: ").append(hidden.reason()).append('\n');
             }
             if (!bundle.changes().isEmpty()) {
                 out.append("\n  ").append(report.applied() ? "Changes" : "Changes to apply").append('\n');

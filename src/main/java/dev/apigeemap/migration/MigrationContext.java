@@ -16,10 +16,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** What a rule sees for one bundle: its analysis report, its workspace, and the shared flows of the migration. */
 final class MigrationContext {
@@ -39,6 +41,8 @@ final class MigrationContext {
     private final Map<String, EnvResource> resources;
     private final Map<String, NewTargetServer> targetServers;
     private final List<Finding> findings = new ArrayList<>();
+    private final List<FalsePositive.Hidden> hidden = new ArrayList<>();
+    private final Set<FalsePositive> matched = new HashSet<>();
     private Rule rule;
 
     MigrationContext(BundleReport report, BundleWorkspace workspace, Map<String, BundleReport> sharedFlows,
@@ -107,8 +111,28 @@ final class MigrationContext {
     private void add(Issue.Severity severity, String location, String message, String action, Finding.Fix fix,
                      List<Subject> subjects) {
         Issue.Severity effective = options.severities().getOrDefault(rule.id(), severity);
-        findings.add(new Finding(rule.id(), rule.category(), effective, report.name(), location, message, action, fix,
-                List.copyOf(new LinkedHashSet<>(subjects))));
+        Finding finding = new Finding(rule.id(), rule.category(), effective, report.name(), location, message, action,
+                fix, List.copyOf(new LinkedHashSet<>(subjects)));
+        FalsePositive falsePositive = falsePositive(location);
+        if (falsePositive == null) {
+            findings.add(finding);
+        } else {
+            matched.add(falsePositive);
+            hidden.add(new FalsePositive.Hidden(finding, falsePositive.reason()));
+        }
+    }
+
+    /**
+     * True when the finding the current rule would report at {@code location} is marked as a false positive. An
+     * auto-fix checks it before changing anything, and then leaves the bundle as it is.
+     */
+    boolean isFalsePositive(String location) {
+        return falsePositive(location) != null;
+    }
+
+    private FalsePositive falsePositive(String location) {
+        return options.falsePositives().stream().filter(f -> f.matches(rule.id(), report.name(), location))
+                .findFirst().orElse(null);
     }
 
     @SafeVarargs
@@ -186,6 +210,17 @@ final class MigrationContext {
 
     List<Finding> findings() {
         return List.copyOf(findings);
+    }
+
+    /** Findings left out as false positives. */
+    List<FalsePositive.Hidden> hidden() {
+        return List.copyOf(hidden);
+    }
+
+    /** False positives of this bundle that matched no finding: the code changed, or their rule is disabled. */
+    List<FalsePositive> unmatched() {
+        return options.falsePositives().stream()
+                .filter(f -> f.bundle().equals(report.name()) && !matched.contains(f)).toList();
     }
 
     /** Resolved shared flows called by the bundle, directly or not, each once. */

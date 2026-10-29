@@ -82,6 +82,7 @@ final class HybridRules {
     /** StatisticsCollector → DataCapture, one data collector per statistic. */
     private static void statisticsCollector(MigrationContext ctx) throws IOException {
         for (Policy policy : ctx.policies("StatisticsCollector")) {
+            boolean apply = !ctx.isFalsePositive(policy.name());
             Element root = ctx.xml(policy);
             StringBuilder xml = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n")
                     .append("<DataCapture name=\"").append(escape(policy.name())).append('"');
@@ -102,11 +103,15 @@ final class HybridRules {
                 String fallback = Xml.text(statistic);
                 if (fallback != null) xml.append(" default=\"").append(escape(fallback)).append('"');
                 xml.append("/>\n    </Capture>\n");
-                ctx.resource("Data collector", collector,
-                        dataType(Xml.attr(statistic, "type")) + ", replaces statistic " + name);
+                if (apply) {
+                    ctx.resource("Data collector", collector,
+                            dataType(Xml.attr(statistic, "type")) + ", replaces statistic " + name);
+                }
             }
             xml.append("</DataCapture>\n");
-            ctx.workspace.replace(policy.file(), xml.toString(), "StatisticsCollector rewritten as DataCapture");
+            if (apply) {
+                ctx.workspace.replace(policy.file(), xml.toString(), "StatisticsCollector rewritten as DataCapture");
+            }
             ctx.fixed(ERROR, policy.name(), "StatisticsCollector is not supported by Apigee hybrid",
                     "Rewritten as a DataCapture policy. Create the data collectors " + names(collectors)
                             + " before deploying, and point custom analytics reports at them.", ctx.on(policy));
@@ -131,11 +136,14 @@ final class HybridRules {
             List<Element> virtualHosts = Xml.children(connection, "VirtualHost");
             if (virtualHosts.isEmpty()) continue;
             List<String> names = virtualHosts.stream().map(Xml::text).toList();
-            virtualHosts.forEach(Dom::remove);
-            ctx.workspace.modified(file, "removed VirtualHost " + names(names));
-            names.forEach(vh -> ctx.resource("Environment group hostnames", vh,
-                    "hostnames served by Edge virtual host " + vh));
-            ctx.fixed(WARN, "ProxyEndpoint " + Xml.nameOf(root),
+            String location = "ProxyEndpoint " + Xml.nameOf(root);
+            if (!ctx.isFalsePositive(location)) {
+                virtualHosts.forEach(Dom::remove);
+                ctx.workspace.modified(file, "removed VirtualHost " + names(names));
+                names.forEach(vh -> ctx.resource("Environment group hostnames", vh,
+                        "hostnames served by Edge virtual host " + vh));
+            }
+            ctx.fixed(WARN, location,
                     "VirtualHost " + names(names) + " is ignored by Apigee hybrid",
                     "VirtualHost elements removed. Add the hostnames these virtual hosts served to the environment"
                             + " group of the target environment: the proxy answers on every hostname of the group.",

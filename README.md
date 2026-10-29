@@ -87,10 +87,12 @@ network (Mermaid is loaded from a CDN to draw the dependency graph).
   migration status; search and filters.
 - **Proxy detail**: filterable findings, **file-by-file preview of the changes (diff)**, resources to create on the
   hybrid side, dependency map, flow variables, history; *Apply migration* button (writes to
-  `<output folder>/<proxy>/`, asks before replacing an existing migration) and HTML report export.
+  `<output folder>/<proxy>/`, asks before replacing an existing migration) and HTML report export. A finding can
+  be marked as a **false positive**, with a reason: it is no longer reported nor counted, its automatic fix is not
+  applied, and it stays listed under *Marked as false positives*, where it can be reported again.
 - **Overview**: every proxy at once, most frequent rules and consolidated inventory of the hybrid resources.
 - **Settings**: proxies folder, shared flows folders, output folder, enabled rules, severity per rule, naming
-  prefixes accepted per policy type. Saved to `~/.apigee-map/settings.json`.
+  prefixes accepted per policy type, false positives. Saved to `~/.apigee-map/settings.json`.
 
 ## Migration to Apigee hybrid
 

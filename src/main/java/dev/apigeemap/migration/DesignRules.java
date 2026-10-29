@@ -118,23 +118,25 @@ final class DesignRules {
             String name = "ts-" + host.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-")
                     + (uri.getPort() != -1 ? "-" + port : "");
 
-            String indent = Dom.indentOf(urlElement);
-            Element loadBalancer = Dom.element(urlElement, "LoadBalancer", null);
-            Element server = Dom.element(urlElement, "Server", null);
-            server.setAttribute("name", name);
-            loadBalancer.appendChild(root.getOwnerDocument().createTextNode(indent + "    "));
-            loadBalancer.appendChild(server);
-            loadBalancer.appendChild(root.getOwnerDocument().createTextNode(indent));
-            Dom.insertBefore(urlElement, loadBalancer);
-            String path = uri.getRawPath();
-            if (path == null || path.isEmpty()) {
-                Dom.remove(urlElement);
-            } else {
-                connection.replaceChild(Dom.element(urlElement, "Path", path), urlElement);
-            }
+            if (!ctx.isFalsePositive(location)) {
+                String indent = Dom.indentOf(urlElement);
+                Element loadBalancer = Dom.element(urlElement, "LoadBalancer", null);
+                Element server = Dom.element(urlElement, "Server", null);
+                server.setAttribute("name", name);
+                loadBalancer.appendChild(root.getOwnerDocument().createTextNode(indent + "    "));
+                loadBalancer.appendChild(server);
+                loadBalancer.appendChild(root.getOwnerDocument().createTextNode(indent));
+                Dom.insertBefore(urlElement, loadBalancer);
+                String path = uri.getRawPath();
+                if (path == null || path.isEmpty()) {
+                    Dom.remove(urlElement);
+                } else {
+                    connection.replaceChild(Dom.element(urlElement, "Path", path), urlElement);
+                }
 
-            ctx.workspace.modified(file, "URL " + url + " replaced by TargetServer " + name);
-            ctx.targetServer(new MigrationContext.NewTargetServer(name, host, port, https));
+                ctx.workspace.modified(file, "URL " + url + " replaced by TargetServer " + name);
+                ctx.targetServer(new MigrationContext.NewTargetServer(name, host, port, https));
+            }
             String ssl = Xml.path(connection, "SSLInfo") != null
                     ? " Move the SSLInfo settings to the target server definition." : "";
             ctx.fixed(WARN, location, "Hardcoded backend URL " + url,
@@ -538,8 +540,10 @@ final class DesignRules {
     private static void unattachedPolicies(MigrationContext ctx) throws IOException {
         for (Policy policy : ctx.policies()) {
             if (policy.attached()) continue;
-            ctx.workspace.delete(policy.file(), "removed (not attached to any flow)");
-            removeFromDescriptor(ctx, policy.name());
+            if (!ctx.isFalsePositive(policy.name())) {
+                ctx.workspace.delete(policy.file(), "removed (not attached to any flow)");
+                removeFromDescriptor(ctx, policy.name());
+            }
             ctx.fixed(INFO, policy.name(), policy.type() + " is not attached to any flow", "Removed from the bundle.",
                     ctx.on(policy));
         }

@@ -4,6 +4,7 @@ import dev.apigeemap.analysis.BundleAnalyzer;
 import dev.apigeemap.analysis.BundleLocator;
 import dev.apigeemap.analysis.SharedFlowRepository;
 import dev.apigeemap.migration.BundleMigration;
+import dev.apigeemap.migration.FalsePositive;
 import dev.apigeemap.migration.FileChange;
 import dev.apigeemap.migration.Finding;
 import dev.apigeemap.migration.MigrationOptions;
@@ -22,6 +23,9 @@ import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -66,6 +70,35 @@ class MigratorTest {
         assertTrue(Files.readString(ORDERS.resolve("apiproxy/proxies/default.xml")).contains("<VirtualHost>"));
         assertEquals(Files.readString(ORDERS.resolve("apiproxy/policies/LC-Orders.xml")),
                 Files.readString(proxy.resolve("policies/LC-Orders.xml")), "untouched files are copied as-is");
+    }
+
+    /** A false positive is neither reported nor fixed, and one that matches nothing any more is told. */
+    @Test
+    void leavesFalsePositivesOutAndDoesNotFixThem() throws IOException {
+        Finding logging = find(new Migrator().migrate(analyze(ORDERS, true), null), "PERF-01");
+        List<FalsePositive> falsePositives = List.of(
+                new FalsePositive("DES-07", "orders-api", "KVM-Legacy-Unused", "called by another proxy"),
+                new FalsePositive("DES-01", "orders-api", "TargetEndpoint legacy", "the host is the same everywhere"),
+                new FalsePositive("PERF-01", logging.bundle(), logging.location(), "the syslog is asynchronous"),
+                new FalsePositive("SEC-01", "orders-api", "Gone", "an old one"));
+        MigrationOptions options = new MigrationOptions(Set.of(), Map.of(), Map.of(), falsePositives);
+        Path out = tmp.resolve("out");
+        MigrationReport report = new Migrator(options, SharedFlowRepository.scan(List.of(SHARED_FLOWS)))
+                .migrate(analyze(ORDERS, true), out);
+
+        assertTrue(report.findings().stream().noneMatch(f -> Set.of("DES-07", "DES-01", "PERF-01").contains(f.rule())));
+        assertEquals(Set.of("DES-07", "DES-01", "PERF-01"), report.falsePositives().stream()
+                .map(h -> h.finding().rule()).collect(Collectors.toSet()));
+        assertEquals("the syslog is asynchronous", report.falsePositives().stream()
+                .filter(h -> h.finding().rule().equals("PERF-01")).findFirst().orElseThrow().reason());
+        assertEquals(List.of(falsePositives.get(3)), report.bundles().get(0).staleFalsePositives());
+
+        Path proxy = out.resolve("orders-api/apiproxy");
+        assertTrue(Files.exists(proxy.resolve("policies/KVM-Legacy-Unused.xml")), "DES-07 did not remove it");
+        assertTrue(Files.readString(proxy.resolve("targets/legacy.xml")).contains("<URL>"), "DES-01 kept the URL");
+        assertFalse(hasResource(report, "Target server (new)", "ts-legacy-orders-internal-8080"));
+        assertTrue(new MigrationTextRenderer().render(report).contains("marked as a false positive: called by another proxy"));
+        assertTrue(new MigrationHtmlRenderer().render(report).contains("Marked as false positives"));
     }
 
     @Test
