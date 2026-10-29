@@ -95,6 +95,7 @@ final class FixCommand {
             try {
                 reply = new BackendClient(BackendConfig.load(config, token.get())).call("fix", new FixContextRenderer().model(context));
             } catch (IOException | RuntimeException e) {
+                BackendClient.report(e, err);
                 reply = null;
             }
             if (!(reply instanceof Map<?, ?> proposal)) {

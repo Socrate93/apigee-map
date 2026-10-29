@@ -243,6 +243,7 @@ final class UiService {
             answer = new BackendClient(BackendConfig.load(backendConfig, token.get().orElse(null)))
                     .call("fix", new FixContextRenderer().model(context));
         } catch (IOException | RuntimeException e) {
+            BackendClient.report(e, System.err);
             answer = null;
         }
         // a failure answers 200 like a fix, with the same message whatever the cause

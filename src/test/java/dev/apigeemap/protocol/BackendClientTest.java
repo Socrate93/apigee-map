@@ -4,8 +4,10 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.PrintStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -36,6 +38,24 @@ class BackendClientTest {
                 "token", request.get("token"), "body", request.get("body"))));
         Object body = client("secret-token").call("fix", Map.of("from", "test"));
         assertEquals(Map.of("type", "fix", "token", "secret-token", "body", Map.of("from", "test")), body);
+    }
+
+    /** The console gets the stack trace of a backend out of reach, and one line for a refusal. */
+    @Test
+    void reportsTheStackTraceOfConnectivityFailuresOnly() throws IOException {
+        start(request -> reply(request.get("id"), true, null));
+        BackendClient client = client("t");
+        stop();
+        IOException unreachable = assertThrows(BackendClient.Unreachable.class, () -> client.call("fix", null));
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        BackendClient.report(unreachable, new PrintStream(err));
+        assertTrue(err.toString().startsWith("Backend call failed: Cannot reach the backend at "), err.toString());
+        assertTrue(err.toString().contains("ConnectException") && err.toString().contains("\tat "), err.toString());
+
+        err.reset();
+        BackendClient.report(new IOException("The backend does not accept this client"), new PrintStream(err));
+        assertEquals("Backend call failed: The backend does not accept this client" + System.lineSeparator(),
+                err.toString());
     }
 
     @Test
