@@ -34,6 +34,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -63,12 +64,12 @@ final class UiService {
                         String error) {
     }
 
-    /** @param scripts how many of its scripts were reviewed as they are now */
+    /** @param scripts how many of its scripts were reviewed as they are now, and since when a review runs */
     record ProxyDetail(ProxySummary summary, String path, int policies, int dependencies, String outputDir,
                        MigrationReport migration, ReviewStatus scripts) {
     }
 
-    record ReviewStatus(int total, int reviewed) {
+    record ReviewStatus(int total, int reviewed, String running) {
     }
 
     record RuleStat(String id, String category, String title, long findings, long proxies,
@@ -136,6 +137,7 @@ final class UiService {
     private final Path services;
     private final TokenStore token = new TokenStore();
     private final Map<String, Proposal> proposals = new LinkedHashMap<>();
+    private final Running running = new Running();
     private Settings settings;
 
     /**
@@ -259,7 +261,8 @@ final class UiService {
         return new ProxyDetail(summary(s, id, analysis, migration), analysis.path(), analysis.policies().size(),
                 analysis.dependencies().size(), output(s, analysis.name()).map(Path::toString).orElse(null),
                 migration, new ReviewStatus(scripts.size(),
-                (int) scripts.stream().filter(t -> reviews.has(t.fingerprint())).count()));
+                (int) scripts.stream().filter(t -> reviews.has(t.fingerprint())).count(),
+                running.since("review", id).map(Instant::toString).orElse(null)));
     }
 
     String mapHtml(String id) throws IOException {
@@ -282,20 +285,32 @@ final class UiService {
 
     /**
      * The documentation of the proxy as {@code {doc, written, current}}, {@code current} false when the proxy changed
-     * since it was written; empty when it never was.
+     * since it was written; without them when it never was. {@code running} tells since when it is being written.
      */
     Map<String, Object> documentation(String id) throws IOException {
         BundleReport analysis = analyze(settings(), id);
         Optional<ProxyDocs.Stored> doc = docs.get(analysis.name());
-        return doc.isEmpty() ? Map.of() : documentation(doc.get(), current(doc.get(), analysis));
+        return withRunning("document", id,
+                doc.isEmpty() ? Map.of() : documentation(doc.get(), current(doc.get(), analysis)));
+    }
+
+    /** The answer, with since when an operation of this kind runs for the proxy. */
+    private Map<String, Object> withRunning(String kind, String id, Map<String, Object> answer) {
+        Map<String, Object> m = new LinkedHashMap<>(answer);
+        running.since(kind, id).ifPresent(since -> m.put("running", since.toString()));
+        return m;
     }
 
     /**
      * Has the backend write the functional documentation of the proxy from its files and those of the shared flows it
      * calls, and keeps it. Answers as {@link #documentation}, or {@code {error}} with the same message whatever the
-     * cause.
+     * cause. While it runs, asking again waits for it.
      */
     Map<String, Object> document(String id) throws IOException {
+        return running.run("document", id, () -> writeDocumentation(id));
+    }
+
+    private Map<String, Object> writeDocumentation(String id) throws IOException {
         BundleReport analysis = analyze(settings(), id);
         List<ProxyDocs.SourceFile> files = ProxyDocs.files(analysis);
         if (files.stream().mapToLong(f -> f.content().length()).sum() > MAX_DOCUMENTED) {
@@ -343,19 +358,26 @@ final class UiService {
 
     /**
      * The regression test plan of the proxy as {@code {plan, written, current}}, {@code current} false when the proxy
-     * changed since it was prepared; empty when it never was.
+     * changed since it was prepared; without them when it never was. {@code running} tells since when it is being
+     * prepared.
      */
     Map<String, Object> testPlan(String id) throws IOException {
         BundleReport analysis = analyze(settings(), id);
         Optional<TestPlans.Stored> plan = plans.get(analysis.name());
-        return plan.isEmpty() ? Map.of() : testPlan(plan.get(), current(plan.get().fingerprint(), analysis));
+        return withRunning("testPlan", id,
+                plan.isEmpty() ? Map.of() : testPlan(plan.get(), current(plan.get().fingerprint(), analysis)));
     }
 
     /**
      * Has the backend prepare the regression test plan of the proxy from its files and those of the shared flows it
      * calls, and keeps it. Answers as {@link #testPlan}, or {@code {error}} with the same message whatever the cause.
+     * While it runs, asking again waits for it.
      */
     Map<String, Object> planTests(String id) throws IOException {
+        return running.run("testPlan", id, () -> prepareTests(id));
+    }
+
+    private Map<String, Object> prepareTests(String id) throws IOException {
         BundleReport analysis = analyze(settings(), id);
         List<ProxyDocs.SourceFile> files = ProxyDocs.files(analysis);
         if (files.stream().mapToLong(f -> f.content().length()).sum() > MAX_PLANNED) {
@@ -699,9 +721,13 @@ final class UiService {
     /**
      * Has the backend review the scripts of the proxy not reviewed as they are now, or all of them when {@code again}
      * is set, and keeps the remarks, which REV-01 then reports. Answers {@code {reviewed, remarks}}, or
-     * {@code {error}} with the same message whatever the cause.
+     * {@code {error}} with the same message whatever the cause. While a review runs, asking again waits for it.
      */
     Map<String, Object> reviewScripts(String id, boolean again) throws IOException {
+        return running.run("review", id, () -> review(id, again));
+    }
+
+    private Map<String, Object> review(String id, boolean again) throws IOException {
         Settings s = settings();
         BundleReport analysis = analyze(s, id);
         List<ScriptReviewRequest.Target> targets = ScriptReviewRequest.scripts(analysis).stream()

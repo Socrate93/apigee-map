@@ -389,17 +389,19 @@ function reviewBar(id, scripts) {
   const label = () => pending ? 'Review scripts' : 'Review again';
   const button = h('button', {type: 'button', class: pending ? 'primary' : '',
     title: pending ? 'Look for problems in the JavaScript that the rules cannot see; the result is kept until a script changes'
-      : 'Review every script again, replacing the REV-01 findings', onclick: review}, label());
+      : 'Review every script again, replacing the REV-01 findings', onclick: () => review()}, label());
   const status = h('span', {class: 'meta'}, !scripts.reviewed
     ? scripts.total + ' script(s), not reviewed yet: a review looks for problems the rules cannot see.'
     : pending ? scripts.reviewed + ' of ' + scripts.total + ' script(s) reviewed: the REV-01 findings come from the reviewed ones.'
     : 'All ' + scripts.total + ' script(s) reviewed: their findings are listed under REV-01.');
   const bar = h('div', {class: 'review-bar'}, status, button);
 
-  async function review() {
+  /** Starts a review, or waits for the one running since {@code since}. */
+  async function review(since) {
     button.disabled = true;
     button.replaceChildren(h('span', {class: 'spinner'}), ' Reviewing…');
-    status.textContent = 'Reviewing ' + (pending || scripts.total) + ' script(s). This can take a minute or two.';
+    status.replaceChildren('Reviewing ' + (pending || scripts.total) + ' script(s) for ', elapsed(since),
+      '. This can take a few minutes.');
     try {
       const result = await api.reviewScripts(id, !pending);
       toast('Reviewed ' + result.reviewed + ' script(s): ' + result.remarks + ' finding(s)');
@@ -410,6 +412,7 @@ function reviewBar(id, scripts) {
       button.textContent = label();
     }
   }
+  if (scripts.running) review(scripts.running);
   return bar;
 }
 
@@ -883,7 +886,7 @@ function documentationPanel(id) {
   function show(stored) {
     const button = h('button', {type: 'button', class: stored.doc && stored.current ? '' : 'primary',
       title: 'Describe what the proxy does from its files and those of its shared flows; it goes into the downloaded report',
-      onclick: write}, stored.doc ? 'Write again' : 'Write documentation');
+      onclick: () => write()}, stored.doc ? 'Write again' : 'Write documentation');
     const status = h('span', {class: 'meta'}, !stored.doc
       ? 'No documentation yet: it describes the operations, security, dependencies and errors of the proxy for the team taking it over.'
       : stored.current ? 'Written on ' + day(stored.written) + '. It is part of the downloaded report.'
@@ -893,10 +896,14 @@ function documentationPanel(id) {
     box.replaceChildren(...[h('div', {class: 'review-bar'}, status, h('div', {class: 'actions'}, exportLink, button)),
       stored.doc && docView(stored.doc)].filter(Boolean));
 
-    async function write() {
+    if (stored.running) write(stored.running);
+
+    /** Writes the documentation, or waits for the writing running since {@code since}. */
+    async function write(since) {
+      delete stored.running;
       button.disabled = true;
       button.replaceChildren(h('span', {class: 'spinner'}), ' Writing…');
-      status.textContent = 'Reading the proxy and its shared flows. This can take a minute or two.';
+      status.replaceChildren('Reading the proxy and its shared flows for ', elapsed(since), '. This can take a few minutes.');
       try {
         show(await api.document(id));
         toast('Documentation written');
@@ -924,17 +931,22 @@ function testsPanel(id) {
   function show(stored) {
     const button = h('button', {type: 'button', class: stored.plan && stored.current ? '' : 'primary',
       title: 'Plan requests from the flows and conditions of the proxy, to replay on Edge and on hybrid',
-      onclick: prepare}, stored.plan ? 'Prepare again' : 'Prepare test plan');
+      onclick: () => prepare()}, stored.plan ? 'Prepare again' : 'Prepare test plan');
     const status = h('span', {class: 'meta'}, !stored.plan
       ? 'No test plan yet: it lists requests that go through each flow and condition of the proxy, to send to Edge and to hybrid and compare what they answer.'
       : stored.current ? 'Prepared on ' + day(stored.written) + '.'
       : h('span', {}, 'Prepared on ' + day(stored.written) + ': ', h('span', {class: 'WARN'}, 'the proxy changed since, it may be out of date.')));
     box.replaceChildren(...[h('div', {class: 'review-bar'}, status, button), stored.plan && planView(id, stored.plan)].filter(Boolean));
 
-    async function prepare() {
+    if (stored.running) prepare(stored.running);
+
+    /** Prepares the plan, or waits for the preparation running since {@code since}. */
+    async function prepare(since) {
+      delete stored.running;
       button.disabled = true;
       button.replaceChildren(h('span', {class: 'spinner'}), ' Preparing…');
-      status.textContent = 'Reading the flows and conditions of the proxy. This can take a minute or two.';
+      status.replaceChildren('Reading the flows and conditions of the proxy for ', elapsed(since),
+        '. This can take a few minutes.');
       try {
         const prepared = await api.planTests(id);
         delete testRuns[id];
@@ -1112,6 +1124,23 @@ function docView(doc) {
 /** Text with what is in backticks as code. */
 function inlineCode(text) {
   return text.split(/`([^`]+)`/).map((part, i) => i % 2 ? h('code', {}, part) : part);
+}
+
+/** How long an operation has been running, from {@code since} or now, kept up to date while it is on the page. */
+function elapsed(since) {
+  const start = since ? new Date(since).getTime() : Date.now();
+  const span = h('span', {});
+  const tick = () => {
+    const seconds = Math.max(0, Math.round((Date.now() - start) / 1000));
+    span.textContent = seconds >= 60 ? Math.floor(seconds / 60) + ' min ' + seconds % 60 + ' s' : seconds + ' s';
+  };
+  tick();
+  const timer = setInterval(() => {
+    if (span.isConnected) span.dataset.shown = 'true';
+    else if (span.dataset.shown) clearInterval(timer);
+    tick();
+  }, 1000);
+  return span;
 }
 
 function day(instant) {
