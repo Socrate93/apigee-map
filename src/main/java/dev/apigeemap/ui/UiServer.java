@@ -138,6 +138,12 @@ public final class UiServer {
             case "GET /api/overview" -> json(exchange, 200, service.overview());
             case "POST /api/fix" -> json(exchange, 200,
                     service.proposeFix(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
+            case "POST /api/fix/all" -> json(exchange, 200,
+                    service.proposeFixes(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
+            case "POST /api/triage" -> json(exchange, 200,
+                    service.triage(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
+            case "GET /api/document" -> json(exchange, 200, service.documentation(query.get("id")));
+            case "POST /api/document" -> json(exchange, 200, service.document(query.get("id")));
             case "POST /api/review" -> json(exchange, 200,
                     service.reviewScripts(query.get("id"), "true".equals(query.get("again"))));
             case "POST /api/fix/accept" -> json(exchange, 200, service.acceptFix(query.get("proposal")));

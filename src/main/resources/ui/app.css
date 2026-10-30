@@ -70,6 +70,7 @@ tr.click:hover td { background: var(--soft); }
 
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 16px 0 10px; }
 .toolbar input[type=search] { min-width: 240px; flex: 1; max-width: 360px; }
+.toolbar .push { margin-left: auto; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { font-size: 12px; padding: 3px 10px; border-radius: 14px; }
 .chip.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
@@ -168,4 +169,14 @@ dialog textarea { width: 100%; box-sizing: border-box; font: inherit; color: var
 dialog textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
 .false-positives summary .count { color: var(--muted); font-weight: normal; font-size: 12px; }
 
+.doc p, .doc li { max-width: 900px; line-height: 1.5; }
+.doc ul { padding-left: 20px; margin: 0; }
 .review-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 16px 0 4px; }
+.triage-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--warn); border-radius: 8px; }
+tr.flagged td { border-bottom: none; }
+tr.triage td { padding-top: 0; }
+tr.triage td > div { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+tr.triage .row-actions { margin-left: auto; }
+.grouped { margin: 0 0 8px; }
+.grouped ul { margin: 6px 0 0; padding-left: 18px; max-height: 180px; overflow: auto; }
+.grouped li { margin: 2px 0; }

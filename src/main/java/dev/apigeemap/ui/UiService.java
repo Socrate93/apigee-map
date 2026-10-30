@@ -11,6 +11,7 @@ import dev.apigeemap.migration.Finding;
 import dev.apigeemap.migration.FixContext;
 import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.migration.Migrator;
+import dev.apigeemap.migration.ProxyDocs;
 import dev.apigeemap.migration.RuleInfo;
 import dev.apigeemap.migration.ScriptReviewRequest;
 import dev.apigeemap.migration.ScriptReviews;
@@ -78,8 +79,12 @@ final class UiService {
     record PathCheck(String path, boolean exists, String message) {
     }
 
-    /** A fix the backend proposed, kept until it is accepted or rejected; {@code before} null for a new file. */
-    private record Proposal(String proxyId, Finding finding, String ruleTitle, String summary,
+    /**
+     * A fix the backend proposed for one finding or several, kept until it is accepted or rejected.
+     *
+     * @param title what the step of history is called once the fix is accepted
+     */
+    private record Proposal(String proxyId, String title, List<Finding> findings, String summary,
                             List<ProposedEdit> edits) {
     }
 
@@ -89,21 +94,29 @@ final class UiService {
 
     /** Proposals not accepted nor rejected yet; the oldest are dropped. */
     private static final int MAX_PROPOSALS = 20;
+    /** At most this many findings are fixed together, so that the proposal stays reviewable. */
+    static final int MAX_GROUPED = 30;
+    /** At most this many findings are triaged together, as the backend allows. */
+    static final int MAX_TRIAGE = 100;
+    /** A proxy is documented when its files hold at most this many characters, as one request can take them. */
+    static final int MAX_DOCUMENTED = 600_000;
 
     private final Path settingsFile;
     private final Path historyRoot;
     private final Path backendConfig;
     private final ScriptReviews reviews;
+    private final ProxyDocs docs;
     private final TokenStore token = new TokenStore();
     private final Map<String, Proposal> proposals = new LinkedHashMap<>();
     private Settings settings;
 
-    /** The script reviews are kept in {@code reviews/}, next to {@code historyRoot}. */
+    /** The script reviews are kept in {@code reviews/}, and the documentation in {@code docs/}, next to {@code historyRoot}. */
     UiService(Path settingsFile, Path historyRoot, Path backendConfig) throws IOException {
         this.settingsFile = settingsFile;
         this.historyRoot = historyRoot;
         this.backendConfig = backendConfig;
         this.reviews = ScriptReviews.at(historyRoot.toAbsolutePath().resolveSibling("reviews"));
+        this.docs = ProxyDocs.at(historyRoot.toAbsolutePath().resolveSibling("docs"));
         this.settings = Settings.load(settingsFile);
     }
 
@@ -224,9 +237,65 @@ final class UiService {
         return new VariableFlowRenderer().model(VariableFlow.of(analyze(settings(), id)), null);
     }
 
+    /** The migration report, with the documentation of the proxy when it was written. */
     String migrationHtml(String id) throws IOException {
         Settings s = settings();
-        return new MigrationHtmlRenderer().render(migrator(s).migrate(analyze(s, id), null));
+        BundleReport analysis = analyze(s, id);
+        Optional<ProxyDocs.Stored> doc = docs.get(analysis.name());
+        return new MigrationHtmlRenderer().render(migrator(s).migrate(analysis, null), doc.orElse(null),
+                doc.isEmpty() || current(doc.get(), analysis));
+    }
+
+    /**
+     * The documentation of the proxy as {@code {doc, written, current}}, {@code current} false when the proxy changed
+     * since it was written; empty when it never was.
+     */
+    Map<String, Object> documentation(String id) throws IOException {
+        BundleReport analysis = analyze(settings(), id);
+        Optional<ProxyDocs.Stored> doc = docs.get(analysis.name());
+        return doc.isEmpty() ? Map.of() : documentation(doc.get(), current(doc.get(), analysis));
+    }
+
+    /**
+     * Has the backend write the functional documentation of the proxy from its files and those of the shared flows it
+     * calls, and keeps it. Answers as {@link #documentation}, or {@code {error}} with the same message whatever the
+     * cause.
+     */
+    Map<String, Object> document(String id) throws IOException {
+        BundleReport analysis = analyze(settings(), id);
+        List<ProxyDocs.SourceFile> files = ProxyDocs.files(analysis);
+        if (files.stream().mapToLong(f -> f.content().length()).sum() > MAX_DOCUMENTED) {
+            throw new UiException(413, "This proxy is too large to be documented at once");
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("proxy", analysis.name());
+        body.put("bundles", FixContext.bundles(analysis).values().stream()
+                .map(b -> Map.of("name", b.name(), "type", b.type().label())).toList());
+        body.put("files", files);
+
+        Object answer;
+        try {
+            answer = new BackendClient(BackendConfig.load(backendConfig, token.get().orElse(null)))
+                    .call("document", body);
+        } catch (IOException | RuntimeException e) {
+            BackendClient.report(e, System.err);
+            answer = null;
+        }
+        ProxyDocs.Doc doc = answer instanceof Map<?, ?> reply ? ProxyDocs.doc(reply) : null;
+        if (doc == null) return Map.of("error", BackendClient.UNAVAILABLE);
+        return documentation(docs.put(analysis.name(), ProxyDocs.fingerprint(files), doc), true);
+    }
+
+    private static boolean current(ProxyDocs.Stored doc, BundleReport analysis) throws IOException {
+        return doc.fingerprint().equals(ProxyDocs.fingerprint(ProxyDocs.files(analysis)));
+    }
+
+    private static Map<String, Object> documentation(ProxyDocs.Stored doc, boolean current) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("doc", doc.doc());
+        m.put("written", doc.written().toString());
+        m.put("current", current);
+        return m;
     }
 
     /**
@@ -255,21 +324,141 @@ final class UiService {
     Map<String, Object> proposeFix(String id, Map<?, ?> picked) throws IOException {
         Settings s = settings();
         BundleReport analysis = analyze(s, id);
-        Finding finding = migrator(s).migrate(analysis, null).findings().stream()
-                .filter(f -> f.bundle().equals(picked.get("bundle")) && f.rule().equals(picked.get("rule"))
-                        && f.location().equals(picked.get("location")))
-                .findFirst().orElseThrow(() -> new UiException(404, "This finding is gone: reload the proxy"));
+        Finding finding = find(migrator(s).migrate(analysis, null).findings(), picked);
         FixContext context = FixContext.of(finding, FixContext.bundles(analysis));
+        Map<String, Object> result = propose(id, "fix", new FixContextRenderer().model(context), context.files(),
+                finding.rule() + (context.ruleTitle() == null ? "" : " " + context.ruleTitle()), List.of(finding));
+        if (result.containsKey("proposal")) {
+            result.put("finding", finding);
+            result.put("ruleTitle", context.ruleTitle());
+        }
+        return result;
+    }
+
+    /**
+     * Asks the backend for one set of changes that fixes several findings of the proxy together, picked as for
+     * {@link #proposeFix} from {@code {findings: [{bundle, rule, location}]}}: a file several of them touch is changed
+     * once. Their contexts are sent together, each policy and file once. Kept like a single fix until accepted.
+     */
+    Map<String, Object> proposeFixes(String id, Map<?, ?> picked) throws IOException {
+        Grouped grouped = grouped(id, picked, MAX_GROUPED, "fixed together");
+        Map<String, Object> result = propose(id, "fixAll", grouped.body(), grouped.files(),
+                "Fixes of " + grouped.findings().size() + " finding(s)", grouped.findings());
+        if (result.containsKey("proposal")) result.put("findings", grouped.findings());
+        return result;
+    }
+
+    /**
+     * Asks the backend which findings of the proxy look like false positives, picked as for {@link #proposeFixes}.
+     * Nothing is marked: answers {@code {falsePositives: [{bundle, rule, location, reason}]}} for the user to confirm,
+     * or {@code {error}} with the same message whatever the cause.
+     */
+    Map<String, Object> triage(String id, Map<?, ?> picked) throws IOException {
+        Grouped grouped = grouped(id, picked, MAX_TRIAGE, "triaged together");
         Object answer;
         try {
             answer = new BackendClient(BackendConfig.load(backendConfig, token.get().orElse(null)))
-                    .call("fix", new FixContextRenderer().model(context));
+                    .call("triage", grouped.body());
+        } catch (IOException | RuntimeException e) {
+            BackendClient.report(e, System.err);
+            answer = null;
+        }
+        if (!(answer instanceof Map<?, ?> reply) || !(reply.get("falsePositives") instanceof List<?> list)) {
+            return Map.of("error", BackendClient.UNAVAILABLE);
+        }
+        List<Map<String, Object>> falsePositives = new ArrayList<>();
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> map) || !(map.get("reason") instanceof String reason) || reason.isBlank()
+                    || grouped.findings().stream().noneMatch(f -> f.bundle().equals(map.get("bundle"))
+                    && f.rule().equals(map.get("rule")) && f.location().equals(map.get("location")))) {
+                continue;
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("bundle", map.get("bundle"));
+            m.put("rule", map.get("rule"));
+            m.put("location", map.get("location"));
+            m.put("reason", reason.strip());
+            falsePositives.add(m);
+        }
+        return Map.of("falsePositives", falsePositives);
+    }
+
+    /** Findings sent together, with the body of the request and the files in it. */
+    private record Grouped(List<Finding> findings, Map<String, Object> body, List<FixContext.SourceFile> files) {
+    }
+
+    /**
+     * The findings of the proxy picked from {@code {findings: [{bundle, rule, location}]}}, at most {@code max}, and
+     * their contexts sent together as {@code {findings, policies, files}}, each policy and file once.
+     */
+    private Grouped grouped(String id, Map<?, ?> picked, int max, String together) throws IOException {
+        if (!(picked.get("findings") instanceof List<?> list) || list.isEmpty()) {
+            throw new UiException(400, "No finding picked");
+        }
+        if (list.size() > max) {
+            throw new UiException(400, "At most " + max + " findings can be " + together + ": filter them first");
+        }
+        Settings s = settings();
+        BundleReport analysis = analyze(s, id);
+        List<Finding> all = migrator(s).migrate(analysis, null).findings();
+        Map<String, BundleReport> bundles = FixContext.bundles(analysis);
+        FixContextRenderer renderer = new FixContextRenderer();
+        List<Finding> findings = new ArrayList<>();
+        List<Object> findingModels = new ArrayList<>();
+        Map<String, Object> policies = new LinkedHashMap<>();
+        Map<String, FixContext.SourceFile> files = new LinkedHashMap<>();
+        for (Object item : list) {
+            Finding finding = find(all, item instanceof Map<?, ?> map ? map : Map.of());
+            if (findings.contains(finding)) continue;
+            findings.add(finding);
+            FixContext context = FixContext.of(finding, bundles);
+            Map<String, Object> model = renderer.model(context);
+            findingModels.add(model.get("finding"));
+            for (Object policy : (List<?>) model.get("policies")) {
+                Map<?, ?> p = (Map<?, ?>) policy;
+                policies.putIfAbsent(p.get("bundle") + "/" + p.get("file"), policy);
+            }
+            context.files().forEach(f -> files.putIfAbsent(f.bundle() + "/" + f.path(), f));
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("findings", findingModels);
+        body.put("policies", List.copyOf(policies.values()));
+        body.put("files", files.values().stream().map(f -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("bundle", f.bundle());
+            m.put("path", f.path());
+            m.put("content", f.content());
+            return m;
+        }).toList());
+        return new Grouped(List.copyOf(findings), body, List.copyOf(files.values()));
+    }
+
+    /** The finding of the proxy picked by its bundle, rule and location. */
+    private static Finding find(List<Finding> findings, Map<?, ?> picked) {
+        return findings.stream()
+                .filter(f -> f.bundle().equals(picked.get("bundle")) && f.rule().equals(picked.get("rule"))
+                        && f.location().equals(picked.get("location")))
+                .findFirst().orElseThrow(() -> new UiException(404, "This finding is gone: reload the proxy"));
+    }
+
+    /**
+     * Sends a fix request to the backend and keeps what it proposes. Answers {@code {proposal, summary, warnings,
+     * edits}}, or {@code {error}} with the same message whatever the cause.
+     *
+     * @param files the files sent, to show each edit against what it replaces
+     */
+    private Map<String, Object> propose(String id, String operation, Map<String, Object> body,
+                                        List<FixContext.SourceFile> files, String title, List<Finding> findings) {
+        Object answer;
+        try {
+            answer = new BackendClient(BackendConfig.load(backendConfig, token.get().orElse(null)))
+                    .call(operation, body);
         } catch (IOException | RuntimeException e) {
             BackendClient.report(e, System.err);
             answer = null;
         }
         // a failure answers 200 like a fix, with the same message whatever the cause
-        if (!(answer instanceof Map<?, ?> reply)) return Map.of("error", BackendClient.UNAVAILABLE);
+        if (!(answer instanceof Map<?, ?> reply)) return new LinkedHashMap<>(Map.of("error", BackendClient.UNAVAILABLE));
 
         List<ProposedEdit> edits = new ArrayList<>();
         if (reply.get("edits") instanceof List<?> list) {
@@ -277,7 +466,7 @@ final class UiService {
                 if (!(item instanceof Map<?, ?> edit)) continue;
                 String bundle = String.valueOf(edit.get("bundle"));
                 String path = String.valueOf(edit.get("path"));
-                String before = context.files().stream()
+                String before = files.stream()
                         .filter(f -> f.bundle().equals(bundle) && f.path().equals(path))
                         .map(FixContext.SourceFile::content).findFirst().orElse(null);
                 edits.add(new ProposedEdit(bundle, path, String.valueOf(edit.get("action")),
@@ -288,14 +477,12 @@ final class UiService {
         String summary = String.valueOf(reply.get("summary"));
         String key = UUID.randomUUID().toString();
         synchronized (proposals) {
-            proposals.put(key, new Proposal(id, finding, context.ruleTitle(), summary, List.copyOf(edits)));
+            proposals.put(key, new Proposal(id, title, findings, summary, List.copyOf(edits)));
             while (proposals.size() > MAX_PROPOSALS) proposals.remove(proposals.keySet().iterator().next());
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("proposal", key);
-        result.put("finding", finding);
-        result.put("ruleTitle", context.ruleTitle());
         result.put("summary", summary);
         result.put("warnings", reply.get("warnings") instanceof List<?> warnings ? warnings : List.of());
         result.put("edits", edits);
@@ -421,10 +608,16 @@ final class UiService {
             }
             List<SourceHistory.Step> steps = new ArrayList<>();
             for (Map.Entry<String, SourceHistory> entry : histories.entrySet()) {
-                StringBuilder message = new StringBuilder(proposal.finding().rule())
-                        .append(proposal.ruleTitle() == null ? "" : " " + proposal.ruleTitle())
-                        .append(" (proposed fix)\n\n")
+                StringBuilder message = new StringBuilder(proposal.title()).append(" (proposed fix)\n\n")
                         .append(proposal.summary()).append("\n\n");
+                if (proposal.findings().size() > 1) {
+                    message.append("Findings:\n");
+                    for (Finding finding : proposal.findings()) {
+                        message.append("- ").append(finding.rule()).append(' ').append(finding.bundle()).append(" · ")
+                                .append(finding.location()).append('\n');
+                    }
+                    message.append('\n');
+                }
                 for (ProposedEdit edit : targets.keySet()) {
                     if (edit.bundle().equals(entry.getKey())) {
                         message.append(edit.action()).append(' ').append(edit.path()).append(": ")

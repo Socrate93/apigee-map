@@ -5,14 +5,24 @@ import dev.apigeemap.migration.EnvResource;
 import dev.apigeemap.migration.FalsePositive;
 import dev.apigeemap.migration.Finding;
 import dev.apigeemap.migration.MigrationReport;
+import dev.apigeemap.migration.ProxyDocs;
 import dev.apigeemap.model.Issue;
 
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import static dev.apigeemap.render.HtmlRenderer.esc;
 
-/** Standalone HTML page: finding cards that filter the finding table, changes per bundle, resources to create. */
+/**
+ * Standalone HTML page: finding cards that filter the finding table, the documentation of the proxy when it was
+ * written, changes per bundle, resources to create.
+ */
 public final class MigrationHtmlRenderer {
+
+    private static final Pattern CODE = Pattern.compile("`([^`]+)`");
+    private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(ZoneId.systemDefault());
 
     /** Cards filter the findings by severity, category or fix; clicking the active card clears the filter. */
     private static final String SCRIPT = """
@@ -32,9 +42,19 @@ public final class MigrationHtmlRenderer {
             td.action{color:var(--muted)}
             #findings{min-width:960px}#findings td:nth-child(2) code{white-space:nowrap;word-break:normal}
             ul.changes{margin:0;padding-left:18px}
+            .doc p,.doc li{max-width:900px;line-height:1.5}.doc ul{padding-left:20px}
+            .doc .stale{color:var(--warn)}
             """;
 
     public String render(MigrationReport report) {
+        return render(report, null, true);
+    }
+
+    /**
+     * @param doc     the documentation of the proxy, or null when it was never written
+     * @param current false when the proxy changed since the documentation was written
+     */
+    public String render(MigrationReport report, ProxyDocs.Stored doc, boolean current) {
         List<Finding> findings = report.findings();
         StringBuilder out = new StringBuilder();
         out.append("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">")
@@ -65,6 +85,8 @@ public final class MigrationHtmlRenderer {
             if (n > 0) card(out, "category=" + category, n, category.label());
         }
         out.append("</div>\n");
+
+        if (doc != null) documentation(out, doc, current);
 
         out.append("<h2>Findings</h2>");
         if (findings.isEmpty()) {
@@ -130,6 +152,60 @@ public final class MigrationHtmlRenderer {
 
         out.append("</main><script>\n").append(SCRIPT).append("</script></body></html>\n");
         return out.toString();
+    }
+
+    private static void documentation(StringBuilder out, ProxyDocs.Stored stored, boolean current) {
+        ProxyDocs.Doc doc = stored.doc();
+        out.append("<section class=\"doc\"><h2>What the proxy does</h2><p class=\"meta\">Written on ")
+                .append(DAY.format(stored.written()));
+        if (!current) out.append(" · <span class=\"stale\">the proxy changed since: it may be out of date</span>");
+        out.append("</p><p>").append(inline(doc.summary())).append("</p>\n");
+        if (!doc.operations().isEmpty()) {
+            out.append("<h3>Operations</h3><div class=\"wrap\"><table><tr><th>Method</th><th>Path</th><th>Flow</th>")
+                    .append("<th>What it does</th></tr>\n");
+            for (ProxyDocs.Operation o : doc.operations()) {
+                out.append("<tr><td><code>").append(esc(o.method())).append("</code></td><td><code>")
+                        .append(esc(o.path().isEmpty() ? "/" : o.path())).append("</code></td><td>").append(esc(o.flow()))
+                        .append("</td><td>").append(inline(o.description())).append("</td></tr>\n");
+            }
+            out.append("</table></div>\n");
+        }
+        points(out, "Security", doc.security());
+        if (!doc.dependencies().isEmpty()) {
+            out.append("<h3>Dependencies</h3><div class=\"wrap\"><table><tr><th>Name</th><th>Kind</th>")
+                    .append("<th>Used for</th></tr>\n");
+            for (ProxyDocs.Dependency d : doc.dependencies()) {
+                out.append("<tr><td><code>").append(esc(d.name())).append("</code></td><td>").append(esc(kind(d.kind())))
+                        .append("</td><td>").append(inline(d.description())).append("</td></tr>\n");
+            }
+            out.append("</table></div>\n");
+        }
+        points(out, "Errors", doc.errors());
+        points(out, "Good to know", doc.notes());
+        out.append("</section>\n");
+    }
+
+    private static void points(StringBuilder out, String title, List<String> points) {
+        if (points.isEmpty()) return;
+        out.append("<h3>").append(title).append("</h3><ul>");
+        points.forEach(p -> out.append("<li>").append(inline(p)).append("</li>"));
+        out.append("</ul>\n");
+    }
+
+    static String kind(String kind) {
+        return switch (kind) {
+            case "TARGET" -> "Target";
+            case "CALLOUT" -> "Service callout";
+            case "SHARED_FLOW" -> "Shared flow";
+            case "KVM" -> "Key value map";
+            case "CACHE" -> "Cache";
+            default -> "Other";
+        };
+    }
+
+    /** Escaped text, with what is in backticks as code. */
+    static String inline(String text) {
+        return CODE.matcher(esc(text)).replaceAll("<code>$1</code>");
     }
 
     private static void card(StringBuilder out, String filter, long count, String label) {

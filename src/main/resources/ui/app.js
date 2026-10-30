@@ -53,8 +53,19 @@ const api = {
   proposeFix: (id, finding) => request('POST', '/api/fix?id=' + encodeURIComponent(id),
     {bundle: finding.bundle, rule: finding.rule, location: finding.location})
     .then(data => { if (data.error) throw new Error(data.error); return data; }),
+  proposeFixes: (id, findings) => request('POST', '/api/fix/all?id=' + encodeURIComponent(id),
+    {findings: findings.map(f => ({bundle: f.bundle, rule: f.rule, location: f.location}))})
+    .then(data => { if (data.error) throw new Error(data.error); return data; }),
+  // a failed triage answers 200 with an error
+  triage: (id, findings) => request('POST', '/api/triage?id=' + encodeURIComponent(id),
+    {findings: findings.map(f => ({bundle: f.bundle, rule: f.rule, location: f.location}))})
+    .then(data => { if (data.error) throw new Error(data.error); return data; }),
   // a failed review answers 200 with an error
   reviewScripts: (id, again) => request('POST', '/api/review?id=' + encodeURIComponent(id) + (again ? '&again=true' : ''))
+    .then(data => { if (data.error) throw new Error(data.error); return data; }),
+  documentation: id => request('GET', '/api/document?id=' + encodeURIComponent(id)),
+  // a failed documentation answers 200 with an error
+  document: id => request('POST', '/api/document?id=' + encodeURIComponent(id))
     .then(data => { if (data.error) throw new Error(data.error); return data; }),
   acceptFix: proposal => request('POST', '/api/fix/accept?proposal=' + encodeURIComponent(proposal)),
   rejectFix: proposal => request('POST', '/api/fix/reject?proposal=' + encodeURIComponent(proposal)),
@@ -274,6 +285,12 @@ async function proxiesView() {
 // ---------------------------------------------------------------------------------------------------------------
 
 const detailState = {tab: 'findings', severity: '', category: '', fix: ''};
+/** The likely false positives found by a triage, by proxy id then finding key, until confirmed or kept. */
+const triaged = {};
+
+function findingKey(f) {
+  return f.bundle + '\n' + f.rule + '\n' + f.location;
+}
 
 async function proxyView(id) {
   const detail = await api.proxy(id);
@@ -311,6 +328,7 @@ async function proxyView(id) {
   const files = migration.bundles.flatMap(b => b.files);
   const tabs = [
     ['findings', 'Findings', findings.length],
+    ['documentation', 'Documentation', null],
     ['changes', 'Changes', files.length],
     ['resources', 'To create in hybrid', migration.resources.length],
     ['variables', 'Variables', null],
@@ -326,7 +344,7 @@ async function proxyView(id) {
       label, n === null ? null : h('span', {class: 'count'}, n))));
     const render = {findings: () => h('div', {}, reviewBar(id, detail.scripts), findingsPanel(id, findings, migration.applied, falsePositives, stale)), changes: () => changesPanel(migration),
       resources: () => resourcesPanel(migration.resources), variables: () => variablesPanel(id), map: () => mapPanel(id),
-      history: () => historyPanel(id)}[tab];
+      history: () => historyPanel(id), documentation: () => documentationPanel(id)}[tab];
     panel.replaceChildren(render());
   }
   showTab(detailState.tab);
@@ -390,6 +408,7 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
   if (!findings.length) return h('div', {}, empty('No findings: nothing to change for hybrid.'), marked);
   const box = h('div', {});
   const filters = h('div', {class: 'toolbar'});
+  const notice = h('div', {});
   const body = h('tbody', {});
   function render() {
     filters.replaceChildren(
@@ -399,11 +418,35 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
         value => { detailState.category = value; render(); }),
       chips([['', 'Any fix'], ['AUTO', 'Automatic'], ['MANUAL', 'Manual']], detailState.fix,
         value => { detailState.fix = value; render(); }));
-    const rows = findings
+    const shown = findings
       .filter(f => (!detailState.severity || f.severity === detailState.severity)
         && (!detailState.category || f.category === detailState.category)
-        && (!detailState.fix || f.fix === detailState.fix))
-      .map(f => h('tr', {},
+        && (!detailState.fix || f.fix === detailState.fix));
+    const manual = shown.filter(f => f.fix === 'MANUAL');
+    const likely = triaged[id] || new Map();
+    const flagged = shown.filter(f => likely.has(findingKey(f)));
+    if (shown.length) {
+      const tooMany = shown.length > MAX_TRIAGE;
+      filters.append(h('button', {type: 'button', class: 'push', disabled: tooMany,
+        title: tooMany ? 'At most ' + MAX_TRIAGE + ' findings can be triaged together: filter them first'
+          : 'Look for false positives among the ' + shown.length + ' findings shown; nothing is marked until you confirm',
+        onclick: event => triage(event.currentTarget, shown)}, 'Spot false positives'));
+    }
+    if (manual.length > 1) {
+      const tooMany = manual.length > MAX_GROUPED;
+      filters.append(h('button', {type: 'button', class: shown.length ? '' : 'push', disabled: tooMany,
+        title: tooMany ? 'At most ' + MAX_GROUPED + ' findings can be fixed together: filter them first'
+          : 'Get one set of changes for the ' + manual.length + ' manual findings shown, and review it before it is written',
+        onclick: () => groupFixDialog(id, manual)}, 'Propose fixes for ' + manual.length + ' findings'));
+    }
+    notice.replaceChildren(...(flagged.length ? [h('div', {class: 'triage-bar'},
+      h('span', {}, h('b', {}, flagged.length), flagged.length === 1 ? ' finding looks like a false positive.'
+        : ' findings look like false positives.', ' ', h('span', {class: 'sub'}, 'Check the reason under each one before you confirm it.')),
+      h('div', {class: 'row-actions'},
+        h('button', {type: 'button', onclick: () => { flagged.forEach(f => likely.delete(findingKey(f))); render(); }}, 'Keep all'),
+        h('button', {type: 'button', class: 'primary', onclick: () => confirmAll(flagged)}, 'Confirm all')))] : []));
+    const rows = shown
+      .flatMap(f => [h('tr', {class: likely.has(findingKey(f)) ? 'flagged' : ''},
         h('td', {}, severity(f.severity)),
         h('td', {class: 'nowrap'}, h('code', {}, f.rule)),
         h('td', {}, f.bundle),
@@ -417,11 +460,68 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
                 onclick: () => fixDialog(id, f)}, 'Propose a fix')
             : null,
           h('button', {type: 'button', title: 'Stop reporting this finding' + (f.fix === 'AUTO' ? ' and do not apply its automatic fix' : ''),
-            onclick: () => markFalsePositive(f)}, 'False positive')))));
+            onclick: () => markFalsePositive(f)}, 'False positive')))),
+        likely.has(findingKey(f)) ? h('tr', {class: 'triage'}, h('td', {colspan: 8}, h('div', {},
+          h('span', {class: 'badge warn'}, 'likely false positive'), ' ',
+          h('span', {}, likely.get(findingKey(f))),
+          h('div', {class: 'row-actions'},
+            h('button', {type: 'button', title: 'Keep reporting this finding',
+              onclick: () => { likely.delete(findingKey(f)); render(); }}, 'Keep'),
+            h('button', {type: 'button', class: 'primary', title: 'Mark it as a false positive, with this reason',
+              onclick: () => confirmOne(f)}, 'Confirm'))))) : null]
+        .filter(Boolean));
     body.replaceChildren(...(rows.length ? rows : [h('tr', {}, h('td', {colspan: 8, class: 'sub'}, 'No finding matches the filter.'))]));
   }
+
+  async function triage(button, picked) {
+    button.disabled = true;
+    button.replaceChildren(h('span', {class: 'spinner'}), ' Triaging…');
+    try {
+      const result = await api.triage(id, picked);
+      const likely = triaged[id] || (triaged[id] = new Map());
+      picked.forEach(f => likely.delete(findingKey(f)));
+      result.falsePositives.forEach(f => likely.set(findingKey(f), f.reason));
+      toast(result.falsePositives.length
+        ? result.falsePositives.length + ' of ' + picked.length + ' findings look like false positives'
+        : 'No false positive spotted among ' + picked.length + ' findings');
+    } catch (error) {
+      toast(error.message, true);
+    }
+    render();
+  }
+
+  async function confirmOne(f) {
+    try {
+      await api.markFalsePositive(f, triaged[id].get(findingKey(f)));
+      triaged[id].delete(findingKey(f));
+      toast(f.rule + ' at ' + f.bundle + ' · ' + f.location + ' marked as a false positive');
+      route();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function confirmAll(flagged) {
+    const ok = await confirmDialog('Mark ' + flagged.length + ' findings as false positives?',
+      'They will no longer be reported nor counted, and their automatic fixes will not be applied. Each keeps its reason. '
+        + 'You can report any of them again at any time.', 'Mark as false positives');
+    if (!ok) return;
+    let marked = 0;
+    try {
+      for (const f of flagged) {
+        await api.markFalsePositive(f, triaged[id].get(findingKey(f)));
+        triaged[id].delete(findingKey(f));
+        marked++;
+      }
+      toast(marked + ' findings marked as false positives');
+    } catch (error) {
+      toast(error.message, true);
+    }
+    route();
+  }
+
   render();
-  box.append(filters, h('div', {class: 'wrap'}, h('table', {style: 'min-width:1060px'},
+  box.append(filters, notice, h('div', {class: 'wrap'}, h('table', {style: 'min-width:1060px'},
     h('thead', {}, h('tr', {}, ['Severity', 'Rule', 'Bundle', 'Where', 'Finding', 'What to do', 'Fix', ''].map(t => h('th', {}, t)))),
     body)), marked);
   return box;
@@ -475,19 +575,41 @@ function falsePositivesSection(falsePositives, stale) {
     table(['Rule', 'Bundle', 'Where', 'Finding', 'Why', ''], rows));
 }
 
+/** At most this many findings are fixed together (UiService.MAX_GROUPED). */
+const MAX_GROUPED = 30;
+/** At most this many findings are triaged together (UiService.MAX_TRIAGE). */
+const MAX_TRIAGE = 100;
+
 /**
  * Asks the backend for a fix of one finding and shows it as diffs. Accept writes it to the source bundles as a step
  * of their history; Reject drops it. Nothing is written before Accept.
  */
-async function fixDialog(id, finding) {
+function fixDialog(id, finding) {
+  proposalDialog([h('code', {}, finding.rule), ' ', finding.message],
+    h('p', {class: 'meta mono'}, finding.bundle + ' · ' + finding.location),
+    ' Preparing a fix. This can take a minute or two.', () => api.proposeFix(id, finding),
+    'No change proposed for this finding.');
+}
+
+/** The same for several findings at once: one set of changes, recorded as one step per bundle. */
+function groupFixDialog(id, findings) {
+  proposalDialog(['Fixes of ' + findings.length + ' findings'],
+    h('details', {class: 'grouped'}, h('summary', {class: 'meta'}, 'The findings to fix'),
+      h('ul', {}, findings.map(f => h('li', {}, h('code', {}, f.rule), ' ', h('span', {class: 'mono'},
+        f.bundle + ' · ' + f.location), ' ', h('span', {class: 'sub'}, f.message))))),
+    ' Preparing one set of changes for ' + findings.length + ' findings. This can take several minutes.',
+    () => api.proposeFixes(id, findings), 'No change proposed for these findings.');
+}
+
+async function proposalDialog(title, subtitle, waiting, ask, nothing) {
   let proposal = null;
   const body = h('div', {class: 'proposal'},
-    h('p', {class: 'meta'}, h('span', {class: 'spinner'}), ' Preparing a fix. This can take a minute or two.'));
+    h('p', {class: 'meta'}, h('span', {class: 'spinner'}), waiting));
   const reject = h('button', {type: 'button', onclick: () => dialog.close()}, 'Reject');
   const accept = h('button', {type: 'button', class: 'primary', disabled: true, onclick: acceptProposal}, 'Accept');
   const dialog = h('dialog', {class: 'wide'},
-    h('h2', {}, h('code', {}, finding.rule), ' ', finding.message),
-    h('p', {class: 'meta mono'}, finding.bundle + ' · ' + finding.location),
+    h('h2', {}, ...title),
+    subtitle,
     body,
     h('div', {class: 'actions'}, reject, accept));
   dialog.addEventListener('close', () => {
@@ -498,7 +620,7 @@ async function fixDialog(id, finding) {
   dialog.showModal();
 
   try {
-    proposal = await api.proposeFix(id, finding);
+    proposal = await ask();
   } catch (error) {
     body.replaceChildren(errorBox(error));
     reject.textContent = 'Close';
@@ -518,7 +640,7 @@ async function fixDialog(id, finding) {
         h('code', {}, edit.bundle + '/' + edit.path)),
       h('p', {class: 'sub'}, edit.reason),
       diffView(diffLines(edit.before, edit.after)))))
-      : empty('No change proposed for this finding.'));
+      : empty(nothing));
   accept.disabled = !proposal.edits.length;
 
   async function acceptProposal() {
@@ -694,6 +816,64 @@ function resourcesPanel(resources) {
   if (!resources.length) return empty('Nothing to create in hybrid for this proxy.');
   return h('div', {style: 'margin-top:16px'}, table(['Kind', 'Name', 'Details', 'Needed by'], resources.map(r => h('tr', {},
     h('td', {class: 'nowrap'}, r.kind), h('td', {}, h('code', {}, r.name)), h('td', {class: 'sub'}, r.details), h('td', {}, r.requiredBy)))));
+}
+
+const DEPENDENCY_KINDS = {TARGET: 'Target', CALLOUT: 'Service callout', SHARED_FLOW: 'Shared flow', KVM: 'Key value map',
+  CACHE: 'Cache', OTHER: 'Other'};
+
+/** The functional documentation of the proxy, kept once written, and a button to write it or write it again. */
+function documentationPanel(id) {
+  const box = h('div', {}, h('div', {class: 'loading'}, 'Loading the documentation…'));
+  api.documentation(id).then(show, error => box.replaceChildren(errorBox(error)));
+
+  function show(stored) {
+    const button = h('button', {type: 'button', class: stored.doc && stored.current ? '' : 'primary',
+      title: 'Describe what the proxy does from its files and those of its shared flows; it goes into the downloaded report',
+      onclick: write}, stored.doc ? 'Write again' : 'Write documentation');
+    const status = h('span', {class: 'meta'}, !stored.doc
+      ? 'No documentation yet: it describes the operations, security, dependencies and errors of the proxy for the team taking it over.'
+      : stored.current ? 'Written on ' + day(stored.written) + '. It is part of the downloaded report.'
+      : h('span', {}, 'Written on ' + day(stored.written) + ': ', h('span', {class: 'WARN'}, 'the proxy changed since, it may be out of date.')));
+    box.replaceChildren(...[h('div', {class: 'review-bar'}, status, button), stored.doc && docView(stored.doc)].filter(Boolean));
+
+    async function write() {
+      button.disabled = true;
+      button.replaceChildren(h('span', {class: 'spinner'}), ' Writing…');
+      status.textContent = 'Reading the proxy and its shared flows. This can take a minute or two.';
+      try {
+        show(await api.document(id));
+        toast('Documentation written');
+      } catch (error) {
+        toast(error.message, true);
+        show(stored);
+      }
+    }
+  }
+  return box;
+}
+
+function docView(doc) {
+  const points = (title, items) => items.length ? [h('h3', {}, title), h('ul', {}, items.map(p => h('li', {}, inlineCode(p))))] : null;
+  return h('div', {class: 'doc'},
+    h('p', {}, inlineCode(doc.summary)),
+    doc.operations.length ? [h('h3', {}, 'Operations'), table(['Method', 'Path', 'Flow', 'What it does'], doc.operations.map(o => h('tr', {},
+      h('td', {class: 'nowrap'}, h('code', {}, o.method)), h('td', {class: 'nowrap'}, h('code', {}, o.path || '/')),
+      h('td', {}, o.flow), h('td', {}, inlineCode(o.description)))))] : null,
+    points('Security', doc.security),
+    doc.dependencies.length ? [h('h3', {}, 'Dependencies'), table(['Name', 'Kind', 'Used for'], doc.dependencies.map(d => h('tr', {},
+      h('td', {}, h('code', {}, d.name)), h('td', {class: 'nowrap'}, DEPENDENCY_KINDS[d.kind] || 'Other'),
+      h('td', {}, inlineCode(d.description)))))] : null,
+    points('Errors', doc.errors),
+    points('Good to know', doc.notes));
+}
+
+/** Text with what is in backticks as code. */
+function inlineCode(text) {
+  return text.split(/`([^`]+)`/).map((part, i) => i % 2 ? h('code', {}, part) : part);
+}
+
+function day(instant) {
+  return new Date(instant).toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'});
 }
 
 const READ_STATUS = {

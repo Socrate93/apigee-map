@@ -48,6 +48,9 @@ class UiFixTest {
     private final HttpClient http = HttpClient.newHttpClient();
     private final List<String> tokens = new CopyOnWriteArrayList<>();
     private final List<Map<?, ?>> reviews = new CopyOnWriteArrayList<>();
+    private final List<Map<?, ?>> groupedFixes = new CopyOnWriteArrayList<>();
+    private final List<Map<?, ?>> triages = new CopyOnWriteArrayList<>();
+    private final List<Map<?, ?>> documented = new CopyOnWriteArrayList<>();
     private HttpServer backend;
     private UiServer server;
     private Path bundle;
@@ -184,6 +187,108 @@ class UiFixTest {
         assertEquals(total, ((List<?>) reviews.get(1).get("scripts")).size(), "again reviews every script");
     }
 
+    @Test
+    void fixesSeveralFindingsTogetherAsOneStep() throws Exception {
+        List<Map<?, ?>> manual = findings(detail()).stream().filter(f -> f.get("fix").equals("MANUAL")).toList();
+        assertTrue(manual.size() > 2, manual.toString());
+        List<Map<String, Object>> picked = manual.stream().limit(UiService.MAX_GROUPED).map(f -> Map.<String, Object>of(
+                "bundle", f.get("bundle"), "rule", f.get("rule"), "location", f.get("location"))).toList();
+
+        HttpResponse<String> response = send("/api/fix/all?id=factorization-api", "POST",
+                Json.write(Map.of("findings", picked)));
+        assertEquals(200, response.statusCode(), response.body());
+        Map<?, ?> proposal = (Map<?, ?>) Json.parse(response.body());
+        assertEquals(picked.size(), ((List<?>) proposal.get("findings")).size());
+        assertEquals(Files.readString(bundle.resolve(COPY)),
+                ((Map<?, ?>) ((List<?>) proposal.get("edits")).get(0)).get("before"));
+
+        Map<?, ?> sent = groupedFixes.get(0);
+        assertEquals(picked.size(), ((List<?>) sent.get("findings")).size());
+        List<String> files = ((List<?>) sent.get("files")).stream()
+                .map(f -> ((Map<?, ?>) f).get("bundle") + "/" + ((Map<?, ?>) f).get("path")).toList();
+        assertEquals(files.size(), files.stream().distinct().count(), "each file once: " + files);
+        assertTrue(files.contains("factorization-api/" + COPY), files.toString());
+
+        HttpResponse<String> accepted = post("/api/fix/accept?proposal=" + proposal.get("proposal"));
+        assertEquals(200, accepted.statusCode(), accepted.body());
+        assertFalse(Files.exists(bundle.resolve(COPY)));
+        Map<?, ?> step = (Map<?, ?>) ((List<?>) ((Map<?, ?>) ((List<?>) Json.parse(
+                get("/api/history?id=factorization-api").body())).get(0)).get("steps")).get(0);
+        assertEquals("Fixes of " + picked.size() + " finding(s) (proposed fix)", step.get("title"));
+        assertTrue(((String) step.get("message")).contains("Findings:\n- " + picked.get(0).get("rule") + " "),
+                (String) step.get("message"));
+
+        assertEquals(400, send("/api/fix/all?id=factorization-api", "POST",
+                Json.write(Map.of("findings", List.of()))).statusCode());
+        assertEquals(400, send("/api/fix/all?id=factorization-api", "POST", Json.write(Map.of("findings",
+                java.util.Collections.nCopies(UiService.MAX_GROUPED + 1, picked.get(0))))).statusCode());
+    }
+
+    @Test
+    void triagesFindingsWithoutMarkingAnything() throws Exception {
+        List<Map<?, ?>> all = findings(detail());
+        List<Map<String, Object>> picked = all.stream().limit(UiService.MAX_TRIAGE)
+                .map(f -> Map.<String, Object>of("bundle", f.get("bundle"), "rule", f.get("rule"),
+                        "location", f.get("location"))).toList();
+
+        HttpResponse<String> response = send("/api/triage?id=factorization-api", "POST",
+                Json.write(Map.of("findings", picked)));
+        assertEquals(200, response.statusCode(), response.body());
+        Map<String, Object> expected = new LinkedHashMap<>(picked.get(0));
+        expected.put("reason", "Set by an earlier step.");
+        assertEquals(Map.of("falsePositives", List.of(expected)), Json.parse(response.body()),
+                "only the findings sent, and nothing about how the triage is made");
+
+        Map<?, ?> sent = triages.get(0);
+        assertEquals(picked.size(), ((List<?>) sent.get("findings")).size());
+        assertTrue(sent.get("files") instanceof List<?> files && !files.isEmpty(), sent.toString());
+        assertEquals(all, findings(detail()), "nothing is marked until confirmed");
+
+        assertEquals(400, send("/api/triage?id=factorization-api", "POST",
+                Json.write(Map.of("findings", List.of()))).statusCode());
+        backend.stop(0);
+        assertEquals(Map.of("error", BackendClient.UNAVAILABLE), Json.parse(send("/api/triage?id=factorization-api",
+                "POST", Json.write(Map.of("findings", picked))).body()));
+    }
+
+    @Test
+    void writesKeepsAndReportsTheDocumentation() throws Exception {
+        assertEquals("{}", get("/api/document?id=factorization-api").body(), "never written");
+        assertFalse(get("/api/report?id=factorization-api").body().contains("What the proxy does"));
+
+        HttpResponse<String> response = post("/api/document?id=factorization-api");
+        assertEquals(200, response.statusCode(), response.body());
+        Map<?, ?> written = (Map<?, ?>) Json.parse(response.body());
+        assertEquals(List.of("doc", "written", "current"), List.copyOf(written.keySet()));
+        assertEquals(true, written.get("current"));
+        Map<?, ?> doc = (Map<?, ?>) written.get("doc");
+        assertEquals("Factors numbers.", doc.get("summary"));
+        assertEquals(1, ((List<?>) doc.get("operations")).size(), "an operation without description is left out");
+        assertEquals(List.of("`VerifyAPIKey` on every request"), doc.get("security"));
+
+        Map<?, ?> sent = documented.get(0);
+        assertEquals("factorization-api", sent.get("proxy"));
+        List<?> files = (List<?>) sent.get("files");
+        assertTrue(files.stream().anyMatch(f -> ((Map<?, ?>) f).get("path").equals("resources/jsc/audit.js")),
+                files.toString());
+        assertTrue(files.stream().allMatch(f -> ((Map<?, ?>) f).get("bundle") instanceof String), files.toString());
+
+        assertEquals(written, Json.parse(get("/api/document?id=factorization-api").body()), "kept");
+        String report = get("/api/report?id=factorization-api").body();
+        assertTrue(report.contains("What the proxy does") && report.contains("Returns the prime factors of <code>n</code>.")
+                && !report.contains("may be out of date"), report);
+
+        Files.writeString(bundle.resolve(COPY), "// changed\n", java.nio.file.StandardOpenOption.APPEND);
+        assertEquals(false, ((Map<?, ?>) Json.parse(get("/api/document?id=factorization-api").body())).get("current"));
+        assertTrue(get("/api/report?id=factorization-api").body().contains("may be out of date"));
+
+        backend.stop(0);
+        assertEquals(Map.of("error", BackendClient.UNAVAILABLE),
+                Json.parse(post("/api/document?id=factorization-api").body()));
+        assertEquals("Factors numbers.", ((Map<?, ?>) ((Map<?, ?>) Json.parse(get("/api/document?id=factorization-api")
+                .body())).get("doc")).get("summary"), "a failure keeps what was written");
+    }
+
     private Map<?, ?> detail() throws Exception {
         return (Map<?, ?>) Json.parse(get("/api/proxy?id=factorization-api").body());
     }
@@ -236,6 +341,30 @@ class UiFixTest {
                     seal(exchange, opened, reply);
                     return;
                 }
+                if (request.get("type").equals("triage")) {
+                    Map<?, ?> body = (Map<?, ?>) request.get("body");
+                    triages.add(body);
+                    Map<?, ?> first = (Map<?, ?>) ((List<?>) body.get("findings")).get(0);
+                    reply.put("body", Map.of("falsePositives", List.of(
+                            Map.of("bundle", first.get("bundle"), "rule", first.get("rule"),
+                                    "location", first.get("location"), "reason", " Set by an earlier step. "),
+                            Map.of("bundle", "other-api", "rule", "DES-10", "location", "x", "reason", "Not sent"))));
+                    seal(exchange, opened, reply);
+                    return;
+                }
+                if (request.get("type").equals("document")) {
+                    documented.add((Map<?, ?>) request.get("body"));
+                    reply.put("body", Map.of("summary", " Factors numbers. ",
+                            "operations", List.of(Map.of("method", "GET", "path", "/factors/{n}", "flow", "Factors",
+                                    "description", "Returns the prime factors of `n`."), Map.of("method", "GET")),
+                            "security", List.of("`VerifyAPIKey` on every request", " "),
+                            "dependencies", List.of(Map.of("name", "math-backend", "kind", "TARGET",
+                                    "description", "Computes the factors")),
+                            "errors", List.of(), "notes", List.of("Nothing else.")));
+                    seal(exchange, opened, reply);
+                    return;
+                }
+                if (request.get("type").equals("fixAll")) groupedFixes.add((Map<?, ?>) request.get("body"));
                 Map<String, Object> edit = new LinkedHashMap<>();
                 edit.put("bundle", "factorization-api");
                 edit.put("path", COPY);
