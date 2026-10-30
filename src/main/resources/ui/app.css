@@ -39,8 +39,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.primary:hover { filter: brightness(1.08); }
 button.link { border: 0; background: none; color: var(--accent); padding: 2px 4px; }
 button:disabled { opacity: .5; cursor: default; }
-input[type=text], input[type=search], select { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
-input[type=text]:focus, input[type=search]:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+input[type=text], input[type=search], input[type=password], select { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+input[type=text]:focus, input[type=search]:focus, input[type=password]:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
 
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin-top: 16px; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
@@ -184,3 +184,17 @@ tr.triage .row-actions { margin-left: auto; }
 .grouped { margin: 0 0 8px; }
 .grouped ul { margin: 6px 0 0; padding-left: 18px; max-height: 180px; overflow: auto; }
 .grouped li { margin: 2px 0; }
+.env-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0 16px; }
+.env-grid input { width: 100%; }
+table.tests td { font-size: 13px; }
+table.tests code.request { word-break: break-all; }
+table.tests details.body pre { margin: 4px 0 0; max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+table.tests tr.flagged-row td { background: var(--del); }
+.result-line { font-size: 12px; margin-top: 2px; word-break: break-word; }
+@media (max-width: 760px) {
+    table.tests thead { display: none; }
+    table.tests tr, table.tests td { display: block; }
+    table.tests td { border-bottom: 0; padding: 4px 10px; }
+    table.tests tr { border-bottom: 1px solid var(--line); padding: 6px 0; }
+    table.tests tr:last-child { border-bottom: 0; }
+}

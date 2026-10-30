@@ -52,6 +52,7 @@ class UiFixTest {
     private final List<Map<?, ?>> triages = new CopyOnWriteArrayList<>();
     private final List<Map<?, ?>> documented = new CopyOnWriteArrayList<>();
     private final List<Map<?, ?>> ported = new CopyOnWriteArrayList<>();
+    private final List<Map<?, ?>> planned = new CopyOnWriteArrayList<>();
     private HttpServer backend;
     private UiServer server;
     private Path bundle;
@@ -291,6 +292,56 @@ class UiFixTest {
     }
 
     @Test
+    void preparesKeepsAndRunsTheTestPlan() throws Exception {
+        assertEquals("{}", get("/api/tests?id=factorization-api").body(), "never prepared");
+        HttpResponse<String> refused = send("/api/tests/run?id=factorization-api", "POST",
+                Json.write(Map.of("edge", "http://127.0.0.1:1", "hybrid", "http://127.0.0.1:1")));
+        assertEquals(409, refused.statusCode(), refused.body());
+
+        HttpResponse<String> response = post("/api/tests?id=factorization-api");
+        assertEquals(200, response.statusCode(), response.body());
+        Map<?, ?> prepared = (Map<?, ?>) Json.parse(response.body());
+        assertEquals(List.of("plan", "written", "current"), List.copyOf(prepared.keySet()));
+        Map<?, ?> plan = (Map<?, ?>) prepared.get("plan");
+        assertEquals("Covers the factors flow.", plan.get("summary"));
+        assertEquals(1, ((List<?>) plan.get("cases")).size(), "a case with an unknown method is left out");
+        assertEquals("factorization-api", planned.get(0).get("proxy"));
+        assertEquals(prepared, Json.parse(get("/api/tests?id=factorization-api").body()), "kept");
+
+        HttpResponse<String> badUrl = send("/api/tests/run?id=factorization-api", "POST",
+                Json.write(Map.of("edge", "ftp://edge", "hybrid", "http://127.0.0.1:1")));
+        assertEquals(400, badUrl.statusCode(), badUrl.body());
+        assertTrue(badUrl.body().contains("Edge URL"), badUrl.body());
+
+        HttpServer environment = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        List<String> keys = new CopyOnWriteArrayList<>();
+        environment.createContext("/", exchange -> {
+            keys.add(exchange.getRequestURI().getPath() + " " + exchange.getRequestHeaders().getFirst("x-apikey"));
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        environment.start();
+        try {
+            String url = "http://127.0.0.1:" + environment.getAddress().getPort();
+            Map<?, ?> run = (Map<?, ?>) Json.parse(send("/api/tests/run?id=factorization-api", "POST",
+                    Json.write(Map.of("edge", url + "/", "hybrid", url, "values", Map.of("apikey", "k1")))).body());
+            assertEquals(url, run.get("edge"), "the trailing slash is dropped");
+            Map<?, ?> result = (Map<?, ?>) ((List<?>) run.get("results")).get(0);
+            assertEquals("SAME", result.get("outcome"), result.toString());
+            assertEquals(List.of("/factorization/factors/12 k1", "/factorization/factors/12 k1"), keys);
+        } finally {
+            environment.stop(0);
+        }
+
+        backend.stop(0);
+        assertEquals(Map.of("error", BackendClient.UNAVAILABLE),
+                Json.parse(post("/api/tests?id=factorization-api").body()));
+        assertEquals(prepared, Json.parse(get("/api/tests?id=factorization-api").body()),
+                "a failure keeps what was prepared");
+    }
+
+    @Test
     void portsANodeTargetToAServiceOfItsOwn() throws Exception {
         String node = "<TargetEndpoint name=\"node\">\n    <ScriptTarget>\n        <ResourceURL>node://server.js</ResourceURL>\n"
                 + "    </ScriptTarget>\n</TargetEndpoint>\n";
@@ -414,6 +465,21 @@ class UiFixTest {
                             "dependencies", List.of(Map.of("name", "math-backend", "kind", "TARGET",
                                     "description", "Computes the factors")),
                             "errors", List.of(), "notes", List.of("Nothing else.")));
+                    seal(exchange, opened, reply);
+                    return;
+                }
+                if (request.get("type").equals("testPlan")) {
+                    planned.add((Map<?, ?>) request.get("body"));
+                    reply.put("body", Map.of("summary", " Covers the factors flow. ",
+                            "variables", List.of(Map.of("name", "apikey", "description", "A consumer key")),
+                            "cases", List.of(
+                                    Map.of("name", "Factors of 12", "flow", "Factors", "method", "GET",
+                                            "path", "/factorization/factors/12",
+                                            "headers", List.of(Map.of("name", "x-apikey", "value", "{{apikey}}")),
+                                            "body", "", "expectedStatus", 200, "compareHeaders", List.of("content-type"),
+                                            "safe", true, "purpose", "Returns the factors."),
+                                    Map.of("name", "Unknown method", "method", "TRACE", "path", "/factorization")),
+                            "warnings", List.of("Create an app on both environments")));
                     seal(exchange, opened, reply);
                     return;
                 }

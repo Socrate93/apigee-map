@@ -71,6 +71,11 @@ const api = {
   // a failed documentation answers 200 with an error
   document: id => request('POST', '/api/document?id=' + encodeURIComponent(id))
     .then(data => { if (data.error) throw new Error(data.error); return data; }),
+  testPlan: id => request('GET', '/api/tests?id=' + encodeURIComponent(id)),
+  // a failed test plan answers 200 with an error
+  planTests: id => request('POST', '/api/tests?id=' + encodeURIComponent(id))
+    .then(data => { if (data.error) throw new Error(data.error); return data; }),
+  runTests: (id, run) => request('POST', '/api/tests/run?id=' + encodeURIComponent(id), run),
   acceptFix: proposal => request('POST', '/api/fix/accept?proposal=' + encodeURIComponent(proposal)),
   rejectFix: proposal => request('POST', '/api/fix/reject?proposal=' + encodeURIComponent(proposal)),
   markFalsePositive: (finding, reason) => request('POST', '/api/false-positive',
@@ -333,6 +338,7 @@ async function proxyView(id) {
   const tabs = [
     ['findings', 'Findings', findings.length],
     ['documentation', 'Documentation', null],
+    ['tests', 'Regression tests', null],
     ['changes', 'Changes', files.length],
     ['resources', 'To create in hybrid', migration.resources.length],
     ['variables', 'Variables', null],
@@ -348,7 +354,7 @@ async function proxyView(id) {
       label, n === null ? null : h('span', {class: 'count'}, n))));
     const render = {findings: () => h('div', {}, reviewBar(id, detail.scripts), findingsPanel(id, findings, migration.applied, falsePositives, stale)), changes: () => changesPanel(migration),
       resources: () => resourcesPanel(migration.resources), variables: () => variablesPanel(id), map: () => mapPanel(id),
-      history: () => historyPanel(id), documentation: () => documentationPanel(id)}[tab];
+      history: () => historyPanel(id), documentation: () => documentationPanel(id), tests: () => testsPanel(id)}[tab];
     panel.replaceChildren(render());
   }
   showTab(detailState.tab);
@@ -898,6 +904,172 @@ function documentationPanel(id) {
     }
   }
   return box;
+}
+
+/** The last run of each proxy's plan, kept while the page is open; variable values are never kept. */
+const testRuns = {};
+const OUTCOMES = {SAME: ['ok', 'Same'], DIFFERENT: ['bad', 'Different'], ERROR: ['warn', 'Error'], SKIPPED: ['', 'Skipped']};
+
+/**
+ * The regression test plan of the proxy, kept once prepared, and a form to replay its requests on Edge then on hybrid
+ * and compare the statuses and headers.
+ */
+function testsPanel(id) {
+  const box = h('div', {}, h('div', {class: 'loading'}, 'Loading the test plan…'));
+  api.testPlan(id).then(show, error => box.replaceChildren(errorBox(error)));
+
+  function show(stored) {
+    const button = h('button', {type: 'button', class: stored.plan && stored.current ? '' : 'primary',
+      title: 'Plan requests from the flows and conditions of the proxy, to replay on Edge and on hybrid',
+      onclick: prepare}, stored.plan ? 'Prepare again' : 'Prepare test plan');
+    const status = h('span', {class: 'meta'}, !stored.plan
+      ? 'No test plan yet: it lists requests that go through each flow and condition of the proxy, to send to Edge and to hybrid and compare what they answer.'
+      : stored.current ? 'Prepared on ' + day(stored.written) + '.'
+      : h('span', {}, 'Prepared on ' + day(stored.written) + ': ', h('span', {class: 'WARN'}, 'the proxy changed since, it may be out of date.')));
+    box.replaceChildren(...[h('div', {class: 'review-bar'}, status, button), stored.plan && planView(id, stored.plan)].filter(Boolean));
+
+    async function prepare() {
+      button.disabled = true;
+      button.replaceChildren(h('span', {class: 'spinner'}), ' Preparing…');
+      status.textContent = 'Reading the flows and conditions of the proxy. This can take a minute or two.';
+      try {
+        const prepared = await api.planTests(id);
+        delete testRuns[id];
+        show(prepared);
+        toast('Test plan prepared: ' + prepared.plan.cases.length + ' request(s)');
+      } catch (error) {
+        toast(error.message, true);
+        show(stored);
+      }
+    }
+  }
+  return box;
+}
+
+function planView(id, plan) {
+  const remembered = loadEnvironments(id);
+  const edge = h('input', {type: 'text', placeholder: 'https://edge-api.example.com', value: remembered.edge || '', spellcheck: 'false'});
+  const hybrid = h('input', {type: 'text', placeholder: 'https://hybrid-api.example.com', value: remembered.hybrid || '', spellcheck: 'false'});
+  const values = {};
+  const unsafeCount = plan.cases.filter(c => !c.safe).length;
+  const unsafe = h('input', {type: 'checkbox'});
+  const runButton = h('button', {type: 'button', class: 'primary', onclick: () => run(null, runButton)}, 'Run on both');
+  const summary = h('div', {});
+  const rows = h('tbody', {});
+
+  const form = h('div', {class: 'form-section'},
+    h('h2', {}, 'Run on both environments'),
+    h('div', {class: 'env-grid'},
+      h('div', {class: 'field'}, h('label', {}, 'Edge'), h('p', {class: 'hint'}, 'Scheme and host of the virtual host the proxy is deployed on.'), edge),
+      h('div', {class: 'field'}, h('label', {}, 'Hybrid'), h('p', {class: 'hint'}, 'Scheme and host of the environment group the migrated proxy is deployed to.'), hybrid)),
+    plan.variables.length ? h('div', {class: 'env-grid'}, plan.variables.map(v => {
+      const input = h('input', {type: /key|token|secret|password|auth|credential/i.test(v.name) ? 'password' : 'text',
+        autocomplete: 'off', spellcheck: 'false', oninput: () => { values[v.name] = input.value; }});
+      return h('div', {class: 'field'}, h('label', {}, h('code', {}, '{{' + v.name + '}}')),
+        v.description ? h('p', {class: 'hint'}, v.description) : null, input);
+    })) : null,
+    h('p', {class: 'sub'}, 'Values are used for this run only and never saved.'),
+    h('div', {class: 'review-bar'},
+      unsafeCount ? h('label', {class: 'check'}, unsafe, ' Include the ' + unsafeCount + ' request(s) that change data, on both environments')
+        : h('span', {}),
+      runButton));
+
+  function render() {
+    const last = testRuns[id];
+    const byIndex = {};
+    (last ? last.results : []).forEach(r => { byIndex[r.index] = r; });
+    if (last) {
+      const n = outcome => last.results.filter(r => r.outcome === outcome).length;
+      summary.replaceChildren(cards([[n('SAME'), 'Same'], [n('DIFFERENT'), 'Different'], [n('ERROR'), 'Errors'], [n('SKIPPED'), 'Skipped']]),
+        h('p', {class: 'meta'}, 'Last run on ', h('code', {}, last.edge), ' and ', h('code', {}, last.hybrid), '.'));
+    } else {
+      summary.replaceChildren();
+    }
+    rows.replaceChildren(...plan.cases.map((c, i) => {
+      const result = byIndex[i];
+      const again = h('button', {type: 'button', class: 'link', title: 'Run this request again on both environments',
+        onclick: () => run([i], again)}, 'Run');
+      return h('tr', {class: result && result.outcome === 'DIFFERENT' ? 'flagged-row' : ''},
+        h('td', {}, h('b', {}, c.name), c.safe ? null : [' ', h('span', {class: 'badge warn', title: 'Changes data on the backend'}, 'changes data')],
+          c.purpose ? h('div', {class: 'sub'}, c.purpose) : null, c.flow ? h('div', {class: 'sub'}, 'Flow ', h('code', {}, c.flow)) : null),
+        h('td', {}, h('code', {class: 'request'}, c.method + ' ' + c.path),
+          c.headers.map(hd => h('div', {class: 'sub mono'}, hd.name + ': ' + hd.value)),
+          c.body ? h('details', {class: 'body'}, h('summary', {class: 'sub'}, 'Body'), h('pre', {class: 'mono'}, c.body)) : null),
+        h('td', {class: 'nowrap'}, c.expectedStatus || h('span', {class: 'sub'}, 'any'),
+          c.compareHeaders.length ? h('div', {class: 'sub'}, c.compareHeaders.join(', ')) : null),
+        h('td', {}, result ? resultView(result) : h('span', {class: 'sub'}, 'Not run')),
+        h('td', {class: 'nowrap'}, again));
+    }));
+  }
+
+  async function run(only, button) {
+    saveEnvironments(id, {edge: edge.value.trim(), hybrid: hybrid.value.trim()});
+    const label = [...button.childNodes];
+    runButton.disabled = true;
+    button.disabled = true;
+    button.replaceChildren(h('span', {class: 'spinner'}), only ? '' : ' Running…');
+    try {
+      const result = await api.runTests(id, {edge: edge.value, hybrid: hybrid.value, values,
+        unsafe: unsafe.checked, cases: only || undefined});
+      const previous = testRuns[id];
+      if (only && previous && previous.edge === result.edge && previous.hybrid === result.hybrid) {
+        previous.results = previous.results.filter(r => !only.includes(r.index)).concat(result.results)
+          .sort((a, b) => a.index - b.index);
+      } else {
+        testRuns[id] = result;
+      }
+      render();
+      const different = result.results.filter(r => r.outcome === 'DIFFERENT').length;
+      const errors = result.results.filter(r => r.outcome === 'ERROR').length;
+      toast(different || errors ? different + ' different, ' + errors + ' error(s)' : 'No difference', different > 0);
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      runButton.disabled = false;
+      button.disabled = false;
+      button.replaceChildren(...label);
+    }
+  }
+
+  render();
+  return h('div', {class: 'doc'},
+    h('p', {}, inlineCode(plan.summary)),
+    plan.warnings.length ? h('div', {class: 'proposal'}, h('div', {class: 'warnings'}, h('b', {}, 'Before running'),
+      h('ul', {}, plan.warnings.map(w => h('li', {}, inlineCode(w)))))) : null,
+    form, summary,
+    h('h3', {}, plan.cases.length + ' request(s)'),
+    h('div', {class: 'wrap'}, h('table', {class: 'tests'},
+      h('thead', {}, h('tr', {}, ['Case', 'Request', 'Expected', 'Result', ''].map(t => h('th', {}, t)))), rows)));
+}
+
+function resultView(result) {
+  const [cls, label] = OUTCOMES[result.outcome];
+  const statuses = result.edge && result.hybrid
+    ? h('span', {class: 'sub'}, ' Edge ' + (result.edge.status || '–') + ' · hybrid ' + (result.hybrid.status || '–')) : null;
+  const errors = [result.edge && result.edge.error && 'Edge: ' + result.edge.error,
+    result.hybrid && result.hybrid.error && 'Hybrid: ' + result.hybrid.error].filter(Boolean);
+  return h('div', {},
+    h('span', {class: 'badge ' + cls}, label), statuses,
+    result.differences.map(d => h('div', {class: 'ERROR result-line'}, d)),
+    errors.map(e => h('div', {class: 'WARN result-line'}, e)),
+    result.notes.map(n => h('div', {class: 'sub result-line'}, n)));
+}
+
+/** The environment URLs of a proxy, remembered in the browser; they hold no secret. */
+function loadEnvironments(id) {
+  try {
+    return JSON.parse(localStorage.getItem('apigee-map.tests.' + id)) || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveEnvironments(id, environments) {
+  try {
+    localStorage.setItem('apigee-map.tests.' + id, JSON.stringify(environments));
+  } catch (e) {
+    // not remembered: they are typed again next time
+  }
 }
 
 function docView(doc) {

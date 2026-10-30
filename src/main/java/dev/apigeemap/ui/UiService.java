@@ -13,6 +13,8 @@ import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.migration.Migrator;
 import dev.apigeemap.migration.PortContext;
 import dev.apigeemap.migration.ProxyDocs;
+import dev.apigeemap.migration.TestPlans;
+import dev.apigeemap.migration.TestRunner;
 import dev.apigeemap.migration.RuleInfo;
 import dev.apigeemap.migration.ScriptReviewRequest;
 import dev.apigeemap.migration.ScriptReviews;
@@ -29,8 +31,10 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -113,6 +117,10 @@ final class UiService {
     static final int MAX_TRIAGE = 100;
     /** A proxy is documented when its files hold at most this many characters, as one request can take them. */
     static final int MAX_DOCUMENTED = 600_000;
+    /** A test plan is prepared when the files of the proxy hold at most this many characters. */
+    static final int MAX_PLANNED = 600_000;
+    /** How long each environment has to answer a test request. */
+    private static final Duration TEST_TIMEOUT = Duration.ofSeconds(30);
     /** A target is ported when its application and endpoints hold at most this many characters. */
     static final int MAX_PORTED = 600_000;
     private static final java.util.regex.Pattern SERVICE_NAME = java.util.regex.Pattern.compile("[a-z][a-z0-9-]{0,62}");
@@ -122,14 +130,16 @@ final class UiService {
     private final Path backendConfig;
     private final ScriptReviews reviews;
     private final ProxyDocs docs;
+    private final TestPlans plans;
     private final Path services;
     private final TokenStore token = new TokenStore();
     private final Map<String, Proposal> proposals = new LinkedHashMap<>();
     private Settings settings;
 
     /**
-     * The script reviews are kept in {@code reviews/}, the documentation in {@code docs/}, and the services ports move
-     * targets to are written to {@code services/<proxy>/<service>}, next to {@code historyRoot}.
+     * The script reviews are kept in {@code reviews/}, the documentation in {@code docs/}, the test plans in {@code
+     * tests/}, and the services ports move targets to are written to {@code services/<proxy>/<service>}, next to
+     * {@code historyRoot}.
      */
     UiService(Path settingsFile, Path historyRoot, Path backendConfig) throws IOException {
         this.settingsFile = settingsFile;
@@ -137,6 +147,7 @@ final class UiService {
         this.backendConfig = backendConfig;
         this.reviews = ScriptReviews.at(historyRoot.toAbsolutePath().resolveSibling("reviews"));
         this.docs = ProxyDocs.at(historyRoot.toAbsolutePath().resolveSibling("docs"));
+        this.plans = TestPlans.at(historyRoot.toAbsolutePath().resolveSibling("tests"));
         this.services = historyRoot.toAbsolutePath().resolveSibling("services");
         this.settings = Settings.load(settingsFile);
     }
@@ -308,13 +319,96 @@ final class UiService {
     }
 
     private static boolean current(ProxyDocs.Stored doc, BundleReport analysis) throws IOException {
-        return doc.fingerprint().equals(ProxyDocs.fingerprint(ProxyDocs.files(analysis)));
+        return current(doc.fingerprint(), analysis);
     }
 
     private static Map<String, Object> documentation(ProxyDocs.Stored doc, boolean current) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("doc", doc.doc());
         m.put("written", doc.written().toString());
+        m.put("current", current);
+        return m;
+    }
+
+    /**
+     * The regression test plan of the proxy as {@code {plan, written, current}}, {@code current} false when the proxy
+     * changed since it was prepared; empty when it never was.
+     */
+    Map<String, Object> testPlan(String id) throws IOException {
+        BundleReport analysis = analyze(settings(), id);
+        Optional<TestPlans.Stored> plan = plans.get(analysis.name());
+        return plan.isEmpty() ? Map.of() : testPlan(plan.get(), current(plan.get().fingerprint(), analysis));
+    }
+
+    /**
+     * Has the backend prepare the regression test plan of the proxy from its files and those of the shared flows it
+     * calls, and keeps it. Answers as {@link #testPlan}, or {@code {error}} with the same message whatever the cause.
+     */
+    Map<String, Object> planTests(String id) throws IOException {
+        BundleReport analysis = analyze(settings(), id);
+        List<ProxyDocs.SourceFile> files = ProxyDocs.files(analysis);
+        if (files.stream().mapToLong(f -> f.content().length()).sum() > MAX_PLANNED) {
+            throw new UiException(413, "This proxy is too large to plan its tests at once");
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("proxy", analysis.name());
+        body.put("bundles", FixContext.bundles(analysis).values().stream()
+                .map(b -> Map.of("name", b.name(), "type", b.type().label())).toList());
+        body.put("files", files);
+
+        Object answer;
+        try {
+            answer = new BackendClient(BackendConfig.load(backendConfig, token.get().orElse(null)))
+                    .call("testPlan", body);
+        } catch (IOException | RuntimeException e) {
+            BackendClient.report(e, System.err);
+            answer = null;
+        }
+        TestPlans.Plan plan = answer instanceof Map<?, ?> reply ? TestPlans.plan(reply) : null;
+        if (plan == null) return Map.of("error", BackendClient.UNAVAILABLE);
+        return testPlan(plans.put(analysis.name(), ProxyDocs.fingerprint(files), plan), true);
+    }
+
+    /**
+     * Replays the test plan of the proxy on Edge then on hybrid, from {@code {edge, hybrid, values, unsafe, cases}}:
+     * the scheme and host of each environment, the values of the variables, whether to run the cases that change
+     * data, and the indexes of the cases to run, all when absent. The values are used for this run only.
+     */
+    TestRunner.Run runTests(String id, Map<?, ?> request) throws IOException {
+        BundleReport analysis = analyze(settings(), id);
+        TestPlans.Plan plan = plans.get(analysis.name()).map(TestPlans.Stored::plan)
+                .orElseThrow(() -> new UiException(409, "Prepare the test plan first"));
+        String edge;
+        String hybrid;
+        try {
+            edge = TestRunner.baseUrl("Edge", request.get("edge") instanceof String s ? s : "");
+            hybrid = TestRunner.baseUrl("hybrid", request.get("hybrid") instanceof String s ? s : "");
+        } catch (IllegalArgumentException e) {
+            throw new UiException(400, e.getMessage());
+        }
+        Map<String, String> values = new LinkedHashMap<>();
+        if (request.get("values") instanceof Map<?, ?> map) {
+            map.forEach((k, v) -> {
+                if (k instanceof String name && v instanceof String value) values.put(name, value);
+            });
+        }
+        Set<Integer> only = null;
+        if (request.get("cases") instanceof List<?> list) {
+            only = new HashSet<>();
+            for (Object item : list) if (item instanceof Number n) only.add(n.intValue());
+        }
+        return new TestRunner(TEST_TIMEOUT).run(plan, edge, hybrid, values,
+                Boolean.TRUE.equals(request.get("unsafe")), only);
+    }
+
+    private static boolean current(String fingerprint, BundleReport analysis) throws IOException {
+        return fingerprint.equals(ProxyDocs.fingerprint(ProxyDocs.files(analysis)));
+    }
+
+    private static Map<String, Object> testPlan(TestPlans.Stored plan, boolean current) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("plan", plan.plan());
+        m.put("written", plan.written().toString());
         m.put("current", current);
         return m;
     }
