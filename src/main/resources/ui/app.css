@@ -198,3 +198,5 @@ table.tests tr.flagged-row td { background: var(--del); }
     table.tests tr { border-bottom: 1px solid var(--line); padding: 6px 0; }
     table.tests tr:last-child { border-bottom: 0; }
 }
+.export-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
+.export-bar .sub { flex: 1 1 260px; }

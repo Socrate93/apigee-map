@@ -1031,9 +1031,28 @@ function planView(id, plan) {
     }
   }
 
+  const format = h('select', {'aria-label': 'Export format'},
+    h('option', {value: 'postman'}, 'Postman collection'),
+    h('option', {value: 'curl'}, 'curl script'),
+    h('option', {value: 'karate'}, 'Karate feature'));
+  const exportLink = h('a', {class: 'button', title: 'Download the plan to run it outside apigee-map, on Edge then on hybrid'}, 'Export');
+  const exportHint = h('span', {class: 'sub'});
+  const EXPORT_HINTS = {
+    postman: 'Set edgeUrl, hybridUrl and the variables of the collection; includeUnsafe=true runs the requests that change data.',
+    curl: 'Run with EDGE, HYBRID and the variables in the environment; INCLUDE_UNSAFE=1 runs the requests that change data. Exits with 1 on a difference.',
+    karate: 'Run with -DedgeUrl, -DhybridUrl and the variables as system properties; --tags ~@unsafe leaves out the requests that change data.',
+  };
+  function chooseFormat() {
+    exportLink.href = '/api/tests/export?id=' + encodeURIComponent(id) + '&format=' + format.value;
+    exportHint.textContent = EXPORT_HINTS[format.value];
+  }
+  format.addEventListener('change', chooseFormat);
+  chooseFormat();
+
   render();
   return h('div', {class: 'doc'},
     h('p', {}, inlineCode(plan.summary)),
+    h('div', {class: 'export-bar'}, format, exportLink, exportHint),
     plan.warnings.length ? h('div', {class: 'proposal'}, h('div', {class: 'warnings'}, h('b', {}, 'Before running'),
       h('ul', {}, plan.warnings.map(w => h('li', {}, inlineCode(w)))))) : null,
     form, summary,

@@ -148,6 +148,12 @@ public final class UiServer {
             case "POST /api/document" -> json(exchange, 200, service.document(query.get("id")));
             case "GET /api/tests" -> json(exchange, 200, service.testPlan(query.get("id")));
             case "POST /api/tests" -> json(exchange, 200, service.planTests(query.get("id")));
+            case "GET /api/tests/export" -> {
+                UiService.Download download = service.exportTests(query.get("id"), query.get("format"));
+                exchange.getResponseHeaders().add("Content-Disposition", "attachment; filename=\""
+                        + download.fileName() + "\"");
+                send(exchange, 200, download.contentType(), download.content());
+            }
             case "POST /api/tests/run" -> json(exchange, 200,
                     service.runTests(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
             case "POST /api/review" -> json(exchange, 200,

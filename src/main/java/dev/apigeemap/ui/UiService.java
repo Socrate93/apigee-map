@@ -13,6 +13,7 @@ import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.migration.Migrator;
 import dev.apigeemap.migration.PortContext;
 import dev.apigeemap.migration.ProxyDocs;
+import dev.apigeemap.migration.TestExports;
 import dev.apigeemap.migration.TestPlans;
 import dev.apigeemap.migration.TestRunner;
 import dev.apigeemap.migration.RuleInfo;
@@ -399,6 +400,21 @@ final class UiService {
         }
         return new TestRunner(TEST_TIMEOUT).run(plan, edge, hybrid, values,
                 Boolean.TRUE.equals(request.get("unsafe")), only);
+    }
+
+    /** A file to download. */
+    record Download(String fileName, String contentType, String content) {
+    }
+
+    /** The test plan of the proxy written for Postman, curl or Karate, see {@link TestExports}. */
+    Download exportTests(String id, String format) throws IOException {
+        TestExports.Format chosen = TestExports.Format.of(format);
+        if (chosen == null) throw new UiException(400, "Export as postman, curl or karate");
+        BundleReport analysis = analyze(settings(), id);
+        TestPlans.Plan plan = plans.get(analysis.name()).map(TestPlans.Stored::plan)
+                .orElseThrow(() -> new UiException(409, "Prepare the test plan first"));
+        return new Download(TestExports.fileName(chosen, analysis.name()), chosen.contentType,
+                TestExports.write(chosen, analysis.name(), plan));
     }
 
     private static boolean current(String fingerprint, BundleReport analysis) throws IOException {
