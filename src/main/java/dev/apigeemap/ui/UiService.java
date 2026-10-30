@@ -11,6 +11,7 @@ import dev.apigeemap.migration.Finding;
 import dev.apigeemap.migration.FixContext;
 import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.migration.Migrator;
+import dev.apigeemap.migration.PortContext;
 import dev.apigeemap.migration.ProxyDocs;
 import dev.apigeemap.migration.RuleInfo;
 import dev.apigeemap.migration.ScriptReviewRequest;
@@ -85,7 +86,19 @@ final class UiService {
      * @param title what the step of history is called once the fix is accepted
      */
     private record Proposal(String proxyId, String title, List<Finding> findings, String summary,
-                            List<ProposedEdit> edits) {
+                            List<ProposedEdit> edits, Service service) {
+    }
+
+    /**
+     * The service a port moves a Node.js or hosted target to, written to {@code folder} once accepted.
+     *
+     * @param targetServer {@code {name, host, port, sslEnabled}}, or null
+     */
+    private record Service(String name, String runtime, Path folder, List<ServiceFile> files,
+                           Map<?, ?> targetServer, List<String> steps) {
+    }
+
+    private record ServiceFile(String path, String content) {
     }
 
     private record ProposedEdit(String bundle, String path, String action, String reason, String before,
@@ -100,23 +113,31 @@ final class UiService {
     static final int MAX_TRIAGE = 100;
     /** A proxy is documented when its files hold at most this many characters, as one request can take them. */
     static final int MAX_DOCUMENTED = 600_000;
+    /** A target is ported when its application and endpoints hold at most this many characters. */
+    static final int MAX_PORTED = 600_000;
+    private static final java.util.regex.Pattern SERVICE_NAME = java.util.regex.Pattern.compile("[a-z][a-z0-9-]{0,62}");
 
     private final Path settingsFile;
     private final Path historyRoot;
     private final Path backendConfig;
     private final ScriptReviews reviews;
     private final ProxyDocs docs;
+    private final Path services;
     private final TokenStore token = new TokenStore();
     private final Map<String, Proposal> proposals = new LinkedHashMap<>();
     private Settings settings;
 
-    /** The script reviews are kept in {@code reviews/}, and the documentation in {@code docs/}, next to {@code historyRoot}. */
+    /**
+     * The script reviews are kept in {@code reviews/}, the documentation in {@code docs/}, and the services ports move
+     * targets to are written to {@code services/<proxy>/<service>}, next to {@code historyRoot}.
+     */
     UiService(Path settingsFile, Path historyRoot, Path backendConfig) throws IOException {
         this.settingsFile = settingsFile;
         this.historyRoot = historyRoot;
         this.backendConfig = backendConfig;
         this.reviews = ScriptReviews.at(historyRoot.toAbsolutePath().resolveSibling("reviews"));
         this.docs = ProxyDocs.at(historyRoot.toAbsolutePath().resolveSibling("docs"));
+        this.services = historyRoot.toAbsolutePath().resolveSibling("services");
         this.settings = Settings.load(settingsFile);
     }
 
@@ -349,6 +370,26 @@ final class UiService {
     }
 
     /**
+     * Asks the backend how to port the Node.js or hosted target of an HYB-04 finding, picked as for
+     * {@link #proposeFix}: with policies of the proxy, or with a service of its own the target reaches through a
+     * TargetServer. Kept like a fix until accepted; accepting it also writes the service, when there is one.
+     */
+    Map<String, Object> proposePort(String id, Map<?, ?> picked) throws IOException {
+        Settings s = settings();
+        BundleReport analysis = analyze(s, id);
+        Finding finding = find(migrator(s).migrate(analysis, null).findings(), picked);
+        if (!PortContext.portable(finding)) throw new UiException(400, "Only a Node.js or hosted target can be ported");
+        FixContext context = PortContext.of(finding, FixContext.bundles(analysis));
+        if (context.files().stream().mapToLong(f -> f.content().length()).sum() > MAX_PORTED) {
+            throw new UiException(413, "This application is too large to be ported at once");
+        }
+        Map<String, Object> result = propose(id, "port", new FixContextRenderer().model(context), context.files(),
+                "Port of " + finding.location(), List.of(finding));
+        if (result.containsKey("proposal")) result.put("finding", finding);
+        return result;
+    }
+
+    /**
      * Asks the backend which findings of the proxy look like false positives, picked as for {@link #proposeFixes}.
      * Nothing is marked: answers {@code {falsePositives: [{bundle, rule, location, reason}]}} for the user to confirm,
      * or {@code {error}} with the same message whatever the cause.
@@ -443,7 +484,8 @@ final class UiService {
 
     /**
      * Sends a fix request to the backend and keeps what it proposes. Answers {@code {proposal, summary, warnings,
-     * edits}}, or {@code {error}} with the same message whatever the cause.
+     * edits}}, with {@code approach} and {@code service} for a port, or {@code {error}} with the same message
+     * whatever the cause.
      *
      * @param files the files sent, to show each edit against what it replaces
      */
@@ -475,9 +517,14 @@ final class UiService {
             }
         }
         String summary = String.valueOf(reply.get("summary"));
+        Service service = null;
+        if (operation.equals("port") && reply.get("service") instanceof Map<?, ?> proposed) {
+            service = service(findings.get(0), proposed);
+            if (service == null) return new LinkedHashMap<>(Map.of("error", BackendClient.UNAVAILABLE));
+        }
         String key = UUID.randomUUID().toString();
         synchronized (proposals) {
-            proposals.put(key, new Proposal(id, title, findings, summary, List.copyOf(edits)));
+            proposals.put(key, new Proposal(id, title, findings, summary, List.copyOf(edits), service));
             while (proposals.size() > MAX_PROPOSALS) proposals.remove(proposals.keySet().iterator().next());
         }
 
@@ -486,7 +533,47 @@ final class UiService {
         result.put("summary", summary);
         result.put("warnings", reply.get("warnings") instanceof List<?> warnings ? warnings : List.of());
         result.put("edits", edits);
+        if (operation.equals("port")) {
+            result.put("approach", reply.get("approach"));
+            result.put("service", service == null ? null : serviceView(service));
+        }
         return result;
+    }
+
+    /** The service of a port as the backend proposes it, or null when it has a bad name or a file outside it. */
+    private Service service(Finding finding, Map<?, ?> proposed) {
+        if (!(proposed.get("name") instanceof String name) || !SERVICE_NAME.matcher(name).matches()
+                || !(proposed.get("files") instanceof List<?> list) || list.isEmpty()) {
+            return null;
+        }
+        Path folder = services.resolve(finding.bundle().replaceAll("[^A-Za-z0-9._-]", "_")).resolve(name);
+        List<ServiceFile> files = new ArrayList<>();
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> file) || !(file.get("path") instanceof String path)
+                    || !(file.get("content") instanceof String content)) {
+                return null;
+            }
+            Path target = folder.resolve(path).normalize();
+            if (path.isBlank() || Path.of(path).isAbsolute() || !target.startsWith(folder) || target.equals(folder)) {
+                return null;
+            }
+            files.add(new ServiceFile(path, content));
+        }
+        List<String> steps = proposed.get("steps") instanceof List<?> items
+                ? items.stream().filter(i -> i instanceof String).map(String::valueOf).toList() : List.of();
+        return new Service(name, proposed.get("runtime") instanceof String runtime ? runtime : "", folder,
+                List.copyOf(files), proposed.get("targetServer") instanceof Map<?, ?> server ? server : null, steps);
+    }
+
+    private static Map<String, Object> serviceView(Service service) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("name", service.name());
+        m.put("runtime", service.runtime());
+        m.put("folder", service.folder().toString());
+        m.put("files", service.files());
+        m.put("targetServer", service.targetServer());
+        m.put("steps", service.steps());
+        return m;
     }
 
     /**
@@ -562,7 +649,8 @@ final class UiService {
     /**
      * Writes a proposal to the source bundles and records it as one step of their history. Changes made by hand
      * before are recorded first, as their own step. Nothing is written when a file the proposal changes is no
-     * longer as it was when the fix was proposed.
+     * longer as it was when the fix was proposed. The service of a port is written to its own folder, which must
+     * not hold anything yet.
      */
     synchronized List<SourceHistory.Step> acceptFix(String key) throws IOException {
         Proposal proposal;
@@ -588,6 +676,11 @@ final class UiService {
             }
             targets.put(edit, file);
         }
+        Service service = proposal.service();
+        if (service != null && Files.exists(service.folder())
+                && (!Files.isDirectory(service.folder()) || !isEmpty(service.folder()))) {
+            throw new UiException(409, service.folder() + " already exists: move it away, then accept again");
+        }
 
         Map<String, SourceHistory> histories = new LinkedHashMap<>();
         try {
@@ -606,10 +699,28 @@ final class UiService {
                     Files.writeString(target.getValue(), edit.after());
                 }
             }
+            if (service != null) {
+                for (ServiceFile file : service.files()) {
+                    Path path = service.folder().resolve(file.path()).normalize();
+                    Files.createDirectories(path.getParent());
+                    Files.writeString(path, file.content());
+                }
+            }
             List<SourceHistory.Step> steps = new ArrayList<>();
             for (Map.Entry<String, SourceHistory> entry : histories.entrySet()) {
-                StringBuilder message = new StringBuilder(proposal.title()).append(" (proposed fix)\n\n")
+                StringBuilder message = new StringBuilder(proposal.title())
+                        .append(proposal.title().startsWith("Port of") ? " (proposed port)\n\n" : " (proposed fix)\n\n")
                         .append(proposal.summary()).append("\n\n");
+                if (service != null) {
+                    message.append("Service ").append(service.name()).append(" written to ").append(service.folder())
+                            .append('\n');
+                    if (service.targetServer() != null) {
+                        message.append("TargetServer ").append(service.targetServer().get("name")).append(": ")
+                                .append(service.targetServer().get("host")).append(':')
+                                .append(service.targetServer().get("port")).append('\n');
+                    }
+                    message.append('\n');
+                }
                 if (proposal.findings().size() > 1) {
                     message.append("Findings:\n");
                     for (Finding finding : proposal.findings()) {

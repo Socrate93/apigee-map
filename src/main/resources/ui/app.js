@@ -56,6 +56,10 @@ const api = {
   proposeFixes: (id, findings) => request('POST', '/api/fix/all?id=' + encodeURIComponent(id),
     {findings: findings.map(f => ({bundle: f.bundle, rule: f.rule, location: f.location}))})
     .then(data => { if (data.error) throw new Error(data.error); return data; }),
+  // a failed port answers 200 with an error
+  proposePort: (id, finding) => request('POST', '/api/port?id=' + encodeURIComponent(id),
+    {bundle: finding.bundle, rule: finding.rule, location: finding.location})
+    .then(data => { if (data.error) throw new Error(data.error); return data; }),
   // a failed triage answers 200 with an error
   triage: (id, findings) => request('POST', '/api/triage?id=' + encodeURIComponent(id),
     {findings: findings.map(f => ({bundle: f.bundle, rule: f.rule, location: f.location}))})
@@ -455,7 +459,10 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
         h('td', {class: 'sub'}, f.action),
         h('td', {}, fixBadge(f, applied)),
         h('td', {}, h('div', {class: 'row-actions'},
-          f.fix === 'MANUAL'
+          portable(f)
+            ? h('button', {type: 'button', title: 'Get a proposed replacement for this target, as policies or as a service of its own, and review it before it is written',
+                onclick: () => portDialog(id, f)}, 'Propose a port')
+            : f.fix === 'MANUAL'
             ? h('button', {type: 'button', title: 'Get a proposed fix for this finding and review it before it is written',
                 onclick: () => fixDialog(id, f)}, 'Propose a fix')
             : null,
@@ -591,6 +598,44 @@ function fixDialog(id, finding) {
     'No change proposed for this finding.');
 }
 
+/** Whether the finding is a Node.js or hosted target to port (PortContext.portable). */
+function portable(finding) {
+  return finding.rule === 'HYB-04' && finding.location.startsWith('TargetEndpoint ');
+}
+
+/**
+ * Asks the backend how to replace a Node.js or hosted target: policies of the proxy, or a service of its own. Accept
+ * writes the bundle changes as a step of their history, and the service to its folder.
+ */
+function portDialog(id, finding) {
+  proposalDialog(['Port of ', h('code', {}, finding.location.replace(/^TargetEndpoint /, ''))],
+    h('p', {class: 'meta mono'}, finding.bundle + ' · ' + finding.message),
+    ' Preparing a port. This can take several minutes.', () => api.proposePort(id, finding),
+    'No change proposed for this target.');
+}
+
+/** The approach of a port and the service it moves the target to, if any. */
+function portView(proposal) {
+  if (!proposal.approach) return null;
+  const approach = h('p', {}, h('span', {class: 'badge auto'},
+    proposal.approach === 'SERVICE' ? 'own service' : 'policies'), ' ',
+    proposal.approach === 'SERVICE' ? 'The application moves to a service of its own, reached through a TargetServer.'
+      : 'The application is rewritten as policies of the proxy.');
+  const service = proposal.service;
+  if (!service) return approach;
+  const server = service.targetServer;
+  return h('div', {}, approach, h('div', {class: 'service'},
+    h('h3', {}, 'Service ', h('code', {}, service.name), service.runtime ? h('span', {class: 'sub'}, '  ' + service.runtime) : null),
+    h('p', {class: 'meta'}, 'Written to ', h('code', {}, service.folder), ' when you accept.'),
+    server ? h('p', {}, 'TargetServer ', h('code', {}, server.name), ' → ', h('code', {},
+      (server.host || '?') + ':' + server.port), server.sslEnabled ? ' with TLS' : ' without TLS',
+      h('span', {class: 'sub'}, ' · to create in every environment')) : null,
+    service.steps.length ? h('div', {}, h('b', {}, 'To deploy it'), h('ol', {}, service.steps.map(step => h('li', {}, step)))) : null,
+    service.files.map(file => h('details', {class: 'file'},
+      h('summary', {}, h('code', {}, file.path), h('span', {class: 'sub'}, file.content.replace(/\n$/, '').split('\n').length + ' lines')),
+      h('pre', {class: 'message'}, file.content)))));
+}
+
 /** The same for several findings at once: one set of changes, recorded as one step per bundle. */
 function groupFixDialog(id, findings) {
   proposalDialog(['Fixes of ' + findings.length + ' findings'],
@@ -635,13 +680,14 @@ async function proposalDialog(title, subtitle, waiting, ask, nothing) {
     h('p', {}, proposal.summary),
     proposal.warnings.length ? h('div', {class: 'warnings'}, h('b', {}, 'Check before deploying'),
       h('ul', {}, proposal.warnings.map(w => h('li', {}, w)))) : null,
+    portView(proposal),
     proposal.edits.length ? h('div', {}, proposal.edits.map(edit => h('div', {class: 'file-edit'},
       h('div', {}, h('span', {class: 'badge ' + (edit.action === 'delete' ? 'bad' : 'auto')}, edit.action), ' ',
         h('code', {}, edit.bundle + '/' + edit.path)),
       h('p', {class: 'sub'}, edit.reason),
       diffView(diffLines(edit.before, edit.after)))))
-      : empty(nothing));
-  accept.disabled = !proposal.edits.length;
+      : proposal.service ? null : empty(nothing));
+  accept.disabled = !proposal.edits.length && !proposal.service;
 
   async function acceptProposal() {
     accept.disabled = reject.disabled = true;
@@ -650,7 +696,9 @@ async function proposalDialog(title, subtitle, waiting, ask, nothing) {
       const steps = await api.acceptFix(proposal.proposal);
       dialog.dataset.accepted = 'true';
       dialog.close();
-      toast('Fix written to the sources' + (steps.length ? ', recorded as step ' + steps.map(s => s.id).join(', ') : ''));
+      toast((proposal.approach ? 'Port' : 'Fix') + ' written to the sources'
+        + (steps.length ? ', recorded as step ' + steps.map(s => s.id).join(', ') : '')
+        + (proposal.service ? '; service written to ' + proposal.service.folder : ''));
       detailState.tab = 'history';
       route();
     } catch (error) {

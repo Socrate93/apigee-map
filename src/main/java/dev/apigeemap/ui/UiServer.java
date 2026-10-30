@@ -140,6 +140,8 @@ public final class UiServer {
                     service.proposeFix(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
             case "POST /api/fix/all" -> json(exchange, 200,
                     service.proposeFixes(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
+            case "POST /api/port" -> json(exchange, 200,
+                    service.proposePort(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
             case "POST /api/triage" -> json(exchange, 200,
                     service.triage(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
             case "GET /api/document" -> json(exchange, 200, service.documentation(query.get("id")));

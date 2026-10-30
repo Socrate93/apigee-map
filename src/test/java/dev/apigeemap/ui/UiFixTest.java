@@ -51,6 +51,7 @@ class UiFixTest {
     private final List<Map<?, ?>> groupedFixes = new CopyOnWriteArrayList<>();
     private final List<Map<?, ?>> triages = new CopyOnWriteArrayList<>();
     private final List<Map<?, ?>> documented = new CopyOnWriteArrayList<>();
+    private final List<Map<?, ?>> ported = new CopyOnWriteArrayList<>();
     private HttpServer backend;
     private UiServer server;
     private Path bundle;
@@ -289,6 +290,58 @@ class UiFixTest {
                 .body())).get("doc")).get("summary"), "a failure keeps what was written");
     }
 
+    @Test
+    void portsANodeTargetToAServiceOfItsOwn() throws Exception {
+        String node = "<TargetEndpoint name=\"node\">\n    <ScriptTarget>\n        <ResourceURL>node://server.js</ResourceURL>\n"
+                + "    </ScriptTarget>\n</TargetEndpoint>\n";
+        Files.writeString(bundle.resolve("targets/node.xml"), node);
+        Files.createDirectories(bundle.resolve("resources/node/node_modules/left-pad"));
+        Files.writeString(bundle.resolve("resources/node/server.js"), "require('http').createServer();\n");
+        Files.writeString(bundle.resolve("resources/node/node_modules/left-pad/index.js"), "module.exports = 1;\n");
+        Map<?, ?> finding = findings(detail()).stream().filter(f -> f.get("rule").equals("HYB-04")).findFirst()
+                .orElseThrow();
+        assertEquals("TargetEndpoint node", finding.get("location"));
+        String picked = Json.write(Map.of("bundle", finding.get("bundle"), "rule", "HYB-04", "location", "TargetEndpoint node"));
+
+        HttpResponse<String> response = send("/api/port?id=factorization-api", "POST", picked);
+        assertEquals(200, response.statusCode(), response.body());
+        Map<?, ?> proposal = (Map<?, ?>) Json.parse(response.body());
+        assertEquals("SERVICE", proposal.get("approach"));
+        Map<?, ?> service = (Map<?, ?>) proposal.get("service");
+        Path folder = tmp.resolve("services/factorization-api/factorization-node").toAbsolutePath();
+        assertEquals(folder.toString(), service.get("folder"));
+        assertEquals(List.of("Deploy it"), service.get("steps"));
+        List<?> sent = (List<?>) ported.get(0).get("files");
+        List<String> paths = sent.stream().map(f -> String.valueOf(((Map<?, ?>) f).get("path"))).toList();
+        assertTrue(paths.containsAll(List.of("targets/node.xml", "resources/node/server.js", "proxies/default.xml")),
+                paths.toString());
+        assertFalse(paths.stream().anyMatch(p -> p.toString().contains("node_modules")), paths.toString());
+        assertFalse(Files.exists(folder), "nothing is written before accept");
+
+        Files.createDirectories(folder);
+        Files.writeString(folder.resolve("old.txt"), "x");
+        HttpResponse<String> taken = post("/api/fix/accept?proposal=" + proposal.get("proposal"));
+        assertEquals(409, taken.statusCode(), taken.body());
+        assertEquals(node, Files.readString(bundle.resolve("targets/node.xml")), "nothing written when the folder is taken");
+        Files.delete(folder.resolve("old.txt"));
+
+        HttpResponse<String> accepted = post("/api/fix/accept?proposal=" + proposal.get("proposal"));
+        assertEquals(200, accepted.statusCode(), accepted.body());
+        assertTrue(Files.readString(bundle.resolve("targets/node.xml")).contains("factorization-node"));
+        assertFalse(Files.exists(bundle.resolve("resources/node/server.js")));
+        assertEquals("FROM node:22\n", Files.readString(folder.resolve("Dockerfile")));
+        assertEquals("require('http');\n", Files.readString(folder.resolve("src/server.js")));
+        Map<?, ?> step = (Map<?, ?>) ((List<?>) ((Map<?, ?>) ((List<?>) Json.parse(get("/api/history?id=factorization-api")
+                .body())).get(0)).get("steps")).get(0);
+        assertEquals("Port of TargetEndpoint node (proposed port)", step.get("title"));
+        assertTrue(step.get("message").toString().contains("TargetServer factorization-node: factorization-node.example.run.app:443"),
+                step.get("message").toString());
+
+        Map<?, ?> other = findings(detail()).stream().filter(f -> !f.get("rule").equals("HYB-04")).findFirst().orElseThrow();
+        assertEquals(400, send("/api/port?id=factorization-api", "POST", Json.write(Map.of("bundle", other.get("bundle"),
+                "rule", other.get("rule"), "location", other.get("location")))).statusCode());
+    }
+
     private Map<?, ?> detail() throws Exception {
         return (Map<?, ?>) Json.parse(get("/api/proxy?id=factorization-api").body());
     }
@@ -361,6 +414,32 @@ class UiFixTest {
                             "dependencies", List.of(Map.of("name", "math-backend", "kind", "TARGET",
                                     "description", "Computes the factors")),
                             "errors", List.of(), "notes", List.of("Nothing else.")));
+                    seal(exchange, opened, reply);
+                    return;
+                }
+                if (request.get("type").equals("port")) {
+                    ported.add((Map<?, ?>) request.get("body"));
+                    Map<String, Object> deleted = new LinkedHashMap<>();
+                    deleted.put("bundle", "factorization-api");
+                    deleted.put("path", "resources/node/server.js");
+                    deleted.put("action", "delete");
+                    deleted.put("content", null);
+                    deleted.put("reason", "Moved to the service");
+                    Map<String, Object> body = new LinkedHashMap<>();
+                    body.put("summary", "Moves the application to Cloud Run.");
+                    body.put("approach", "SERVICE");
+                    body.put("edits", List.of(Map.of("bundle", "factorization-api", "path", "targets/node.xml",
+                            "action", "replace", "reason", "Targets the service", "content",
+                            "<TargetEndpoint name=\"node\"><HTTPTargetConnection><LoadBalancer><Server name=\"factorization-node\"/>"
+                                    + "</LoadBalancer></HTTPTargetConnection></TargetEndpoint>\n"), deleted));
+                    body.put("warnings", List.of());
+                    body.put("service", Map.of("name", "factorization-node", "runtime", "Node.js 22 on Cloud Run",
+                            "files", List.of(Map.of("path", "src/server.js", "content", "require('http');\n"),
+                                    Map.of("path", "Dockerfile", "content", "FROM node:22\n")),
+                            "targetServer", Map.of("name", "factorization-node",
+                                    "host", "factorization-node.example.run.app", "port", 443, "sslEnabled", true),
+                            "steps", List.of("Deploy it")));
+                    reply.put("body", body);
                     seal(exchange, opened, reply);
                     return;
                 }

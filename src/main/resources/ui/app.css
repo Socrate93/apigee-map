@@ -177,6 +177,10 @@ tr.flagged td { border-bottom: none; }
 tr.triage td { padding-top: 0; }
 tr.triage td > div { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 tr.triage .row-actions { margin-left: auto; }
+.service { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin: 12px 0; }
+.service h3 { margin: 4px 0 8px; }
+.service ol { margin: 4px 0 8px; padding-left: 20px; }
+.service details.file pre { max-height: 360px; overflow: auto; }
 .grouped { margin: 0 0 8px; }
 .grouped ul { margin: 6px 0 0; padding-left: 18px; max-height: 180px; overflow: auto; }
 .grouped li { margin: 2px 0; }
