@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class TestExportsTest {
 
@@ -81,6 +82,10 @@ class TestExportsTest {
 
     @Test
     void theCurlScriptComparesBothEnvironmentsAndFailsOnADifference() throws Exception {
+        Path probe = tmp.resolve("probe.sh");
+        Files.writeString(probe, "curl --version > /dev/null\n");
+        assumeTrue(runs("bash", probe.toString()),
+                "bash and curl are needed to run the script, as on Linux, macOS or Git Bash");
         Path script = tmp.resolve(TestExports.fileName(TestExports.Format.CURL, "orders api"));
         assertEquals("orders_api-regression.sh", script.getFileName().toString());
         Files.writeString(script, TestExports.write(TestExports.Format.CURL, "orders api", PLAN));
@@ -104,6 +109,20 @@ class TestExportsTest {
 
         Result missing = bash(script, Map.of("orderId", ""));
         assertTrue(missing.code() != 0 && missing.output().contains("orderId"), missing.output());
+    }
+
+    /** Whether the command starts and succeeds, so that the script can run on this machine. */
+    private static boolean runs(String... command) {
+        try {
+            Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
+            process.getInputStream().readAllBytes();
+            return process.waitFor(10, TimeUnit.SECONDS) && process.exitValue() == 0;
+        } catch (IOException e) {
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     private record Result(int code, String output) {
