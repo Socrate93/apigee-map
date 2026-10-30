@@ -23,7 +23,7 @@ import java.util.UUID;
  * <p>
  * An operation takes minutes, longer than some proxies keep a request open: requests ask the backend to answer
  * within seconds ({@code poll}), and while it answers {@code {pending: true, job}} the client asks for the
- * {@code result} of that job.
+ * {@code result} of that job every {@link #INTERVAL}.
  */
 public final class BackendClient {
 
@@ -34,6 +34,8 @@ public final class BackendClient {
     private static final Duration TIMEOUT = Duration.ofMinutes(2);
     /** A whole operation, asked for again and again while it runs. */
     private static final Duration DEADLINE = Duration.ofMinutes(15);
+    /** The pause between two asks for the result of a running operation, each held by the backend 20 seconds at most. */
+    static final Duration INTERVAL = Duration.ofSeconds(120);
 
     /** The backend could not be reached: TLS, proxy, network or timeout. */
     public static final class Unreachable extends IOException {
@@ -43,6 +45,7 @@ public final class BackendClient {
     }
 
     private final BackendConfig config;
+    private final Duration interval;
     /** Null when TLS could not be set up, which {@link #tlsFailure} tells */
     private final HttpClient http;
     private final RuntimeException tlsFailure;
@@ -56,7 +59,12 @@ public final class BackendClient {
     }
 
     public BackendClient(BackendConfig config) {
+        this(config, INTERVAL);
+    }
+
+    BackendClient(BackendConfig config, Duration interval) {
         this.config = config;
+        this.interval = interval;
         HttpClient client = null;
         RuntimeException failure = null;
         try {
@@ -117,6 +125,12 @@ public final class BackendClient {
         while (Boolean.TRUE.equals(map.get("pending")) && map.get("job") instanceof String job) {
             if (System.nanoTime() > deadline) {
                 throw new IOException("The backend did not answer within " + DEADLINE.toMinutes() + " minutes");
+            }
+            try {
+                Thread.sleep(interval);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted", e);
             }
             map = exchange("result", Map.of("job", job));
         }

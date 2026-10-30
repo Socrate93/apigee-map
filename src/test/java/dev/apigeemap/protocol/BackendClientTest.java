@@ -58,7 +58,11 @@ class BackendClientTest {
             }
             return reply(request.get("id"), true, "done");
         });
-        assertEquals("done", client("t").call("testPlan", Map.of("proxy", "p")));
+        BackendClient client = new BackendClient(new BackendConfig(URI.create("http://127.0.0.1:"
+                + server.getAddress().getPort()), keys.getPublic(), "t"), java.time.Duration.ofMillis(300));
+        long start = System.nanoTime();
+        assertEquals("done", client.call("testPlan", Map.of("proxy", "p")));
+        assertTrue(System.nanoTime() - start >= 600_000_000L, "a pause before each ask");
         assertEquals(java.util.List.of("testPlan true {proxy=p}", "result true {job=j1}", "result true {job=j1}"),
                 asked);
     }
