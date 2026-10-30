@@ -20,14 +20,20 @@ import java.util.UUID;
  * <p>
  * A request is {@code {id, ts, token, type, body}} sealed in an {@link Envelope}; the response is
  * {@code {id, ok, body}} or {@code {id, ok: false, error}}, sealed with the key of that request.
+ * <p>
+ * An operation takes minutes, longer than some proxies keep a request open: requests ask the backend to answer
+ * within seconds ({@code poll}), and while it answers {@code {pending: true, job}} the client asks for the
+ * {@code result} of that job.
  */
 public final class BackendClient {
 
     /** What users see when a feature of the backend fails, whatever the cause: the details stay in the exception. */
     public static final String UNAVAILABLE = "This feature is not available. Please contact administrator";
 
-    /** A fix takes a minute or two, up to the 10 minutes Cloud Run allows a request. */
-    private static final Duration TIMEOUT = Duration.ofMinutes(10);
+    /** One exchange: the backend answers within seconds that a long operation is still running. */
+    private static final Duration TIMEOUT = Duration.ofMinutes(2);
+    /** A whole operation, asked for again and again while it runs. */
+    private static final Duration DEADLINE = Duration.ofMinutes(15);
 
     /** The backend could not be reached: TLS, proxy, network or timeout. */
     public static final class Unreachable extends IOException {
@@ -106,6 +112,28 @@ public final class BackendClient {
 
     /** Calls an operation of the backend and returns the body of its response. */
     public Object call(String type, Object body) throws IOException {
+        long deadline = System.nanoTime() + DEADLINE.toNanos();
+        Map<?, ?> map = exchange(type, body);
+        while (Boolean.TRUE.equals(map.get("pending")) && map.get("job") instanceof String job) {
+            if (System.nanoTime() > deadline) {
+                throw new IOException("The backend did not answer within " + DEADLINE.toMinutes() + " minutes");
+            }
+            map = exchange("result", Map.of("job", job));
+        }
+        if (Boolean.TRUE.equals(map.get("ok"))) return map.get("body");
+        int status = map.get("status") instanceof Number n ? n.intValue() : 0;
+        throw new IOException(switch (status) {
+            case 401 -> "The backend does not accept this client: check the token of the backend settings";
+            case 408 -> "The clock of this machine is more than 5 minutes off: set it right and try again";
+            case 409 -> "The backend already received this request: try again";
+            case 400 -> "The backend could not understand the request: the app and the backend may not be of the "
+                    + "same version";
+            default -> "Backend error: " + map.get("error");
+        });
+    }
+
+    /** One request and its opened reply. */
+    private Map<?, ?> exchange(String type, Object body) throws IOException {
         String id = UUID.randomUUID().toString();
         Map<String, Object> request = new LinkedHashMap<>();
         request.put("id", id);
@@ -113,6 +141,7 @@ public final class BackendClient {
         request.put("token", config.token());
         request.put("type", type);
         request.put("body", body);
+        request.put("poll", true);
         Envelope.Sealed sealed = Envelope.seal(config.publicKey(), config.keyId(),
                 Json.write(request).getBytes(StandardCharsets.UTF_8));
 
@@ -137,16 +166,7 @@ public final class BackendClient {
         if (map.get("id") != null && !id.equals(map.get("id"))) {
             throw new IOException("The backend answered another request");
         }
-        if (Boolean.TRUE.equals(map.get("ok"))) return map.get("body");
-        int status = map.get("status") instanceof Number n ? n.intValue() : 0;
-        throw new IOException(switch (status) {
-            case 401 -> "The backend does not accept this client: check the token of the backend settings";
-            case 408 -> "The clock of this machine is more than 5 minutes off: set it right and try again";
-            case 409 -> "The backend already received this request: try again";
-            case 400 -> "The backend could not understand the request: the app and the backend may not be of the "
-                    + "same version";
-            default -> "Backend error: " + map.get("error");
-        });
+        return map;
     }
 
     private HttpResponse<byte[]> send(byte[] wire) throws IOException {

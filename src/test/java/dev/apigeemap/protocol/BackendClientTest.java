@@ -43,6 +43,26 @@ class BackendClientTest {
         assertEquals(Map.of("type", "fix", "token", "secret-token", "body", Map.of("from", "test")), body);
     }
 
+    /** While the backend answers that the operation runs, the client asks for its result. */
+    @Test
+    void asksForTheResultWhileTheOperationRuns() throws IOException {
+        java.util.List<String> asked = new java.util.concurrent.CopyOnWriteArrayList<>();
+        start(request -> {
+            asked.add(request.get("type") + " " + request.get("poll") + " " + request.get("body"));
+            if (asked.size() < 3) {
+                Map<String, Object> pending = reply(request.get("id"), false, null);
+                pending.put("status", 202);
+                pending.put("pending", true);
+                pending.put("job", "j1");
+                return pending;
+            }
+            return reply(request.get("id"), true, "done");
+        });
+        assertEquals("done", client("t").call("testPlan", Map.of("proxy", "p")));
+        assertEquals(java.util.List.of("testPlan true {proxy=p}", "result true {job=j1}", "result true {job=j1}"),
+                asked);
+    }
+
     /** The proxy credentials of the system properties go to the proxy only. */
     @Test
     void answersTheProxyWithTheCredentialsOfTheSystemProperties() {
