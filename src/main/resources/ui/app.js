@@ -888,7 +888,10 @@ function documentationPanel(id) {
       ? 'No documentation yet: it describes the operations, security, dependencies and errors of the proxy for the team taking it over.'
       : stored.current ? 'Written on ' + day(stored.written) + '. It is part of the downloaded report.'
       : h('span', {}, 'Written on ' + day(stored.written) + ': ', h('span', {class: 'WARN'}, 'the proxy changed since, it may be out of date.')));
-    box.replaceChildren(...[h('div', {class: 'review-bar'}, status, button), stored.doc && docView(stored.doc)].filter(Boolean));
+    const exportLink = stored.doc && h('a', {class: 'button', href: '/api/document/export?id=' + encodeURIComponent(id),
+      title: 'Download the documentation as a Markdown file, to keep next to the proxy or in a wiki'}, 'Export Markdown');
+    box.replaceChildren(...[h('div', {class: 'review-bar'}, status, h('div', {class: 'actions'}, exportLink, button)),
+      stored.doc && docView(stored.doc)].filter(Boolean));
 
     async function write() {
       button.disabled = true;

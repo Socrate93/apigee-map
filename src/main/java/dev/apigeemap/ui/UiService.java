@@ -23,6 +23,7 @@ import dev.apigeemap.model.BundleReport;
 import dev.apigeemap.model.Issue;
 import dev.apigeemap.protocol.BackendClient;
 import dev.apigeemap.protocol.BackendConfig;
+import dev.apigeemap.render.DocMarkdownRenderer;
 import dev.apigeemap.render.FixContextRenderer;
 import dev.apigeemap.render.HtmlRenderer;
 import dev.apigeemap.render.MigrationHtmlRenderer;
@@ -317,6 +318,15 @@ final class UiService {
         ProxyDocs.Doc doc = answer instanceof Map<?, ?> reply ? ProxyDocs.doc(reply) : null;
         if (doc == null) return Map.of("error", BackendClient.UNAVAILABLE);
         return documentation(docs.put(analysis.name(), ProxyDocs.fingerprint(files), doc), true);
+    }
+
+    /** The documentation of the proxy as Markdown, see {@link DocMarkdownRenderer}. */
+    Download exportDocumentation(String id) throws IOException {
+        BundleReport analysis = analyze(settings(), id);
+        ProxyDocs.Stored doc = docs.get(analysis.name())
+                .orElseThrow(() -> new UiException(409, "Write the documentation first"));
+        return new Download(analysis.name().replaceAll("[^A-Za-z0-9._-]", "_") + ".md", "text/markdown",
+                new DocMarkdownRenderer().render(analysis.name(), doc, current(doc, analysis)));
     }
 
     private static boolean current(ProxyDocs.Stored doc, BundleReport analysis) throws IOException {

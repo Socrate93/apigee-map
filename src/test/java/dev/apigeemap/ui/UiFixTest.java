@@ -256,6 +256,7 @@ class UiFixTest {
     @Test
     void writesKeepsAndReportsTheDocumentation() throws Exception {
         assertEquals("{}", get("/api/document?id=factorization-api").body(), "never written");
+        assertEquals(409, get("/api/document/export?id=factorization-api").statusCode());
         assertFalse(get("/api/report?id=factorization-api").body().contains("What the proxy does"));
 
         HttpResponse<String> response = post("/api/document?id=factorization-api");
@@ -276,6 +277,12 @@ class UiFixTest {
         assertTrue(files.stream().allMatch(f -> ((Map<?, ?>) f).get("bundle") instanceof String), files.toString());
 
         assertEquals(written, Json.parse(get("/api/document?id=factorization-api").body()), "kept");
+        HttpResponse<String> markdown = get("/api/document/export?id=factorization-api");
+        assertEquals(200, markdown.statusCode());
+        assertEquals("attachment; filename=\"factorization-api.md\"",
+                markdown.headers().firstValue("Content-Disposition").orElse(""));
+        assertTrue(markdown.body().startsWith("# factorization-api\n") && markdown.body().contains(
+                "| `GET` | `/factors/{n}` | Factors | Returns the prime factors of `n`. |"), markdown.body());
         String report = get("/api/report?id=factorization-api").body();
         assertTrue(report.contains("What the proxy does") && report.contains("Returns the prime factors of <code>n</code>.")
                 && !report.contains("may be out of date"), report);
