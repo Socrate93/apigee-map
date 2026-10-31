@@ -13,8 +13,10 @@ import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.migration.Migrator;
 import dev.apigeemap.migration.PortContext;
 import dev.apigeemap.migration.ProxyDocs;
+import dev.apigeemap.migration.ProxyProfile;
 import dev.apigeemap.migration.TestExports;
 import dev.apigeemap.migration.TestPlans;
+import dev.apigeemap.migration.TestTargets;
 import dev.apigeemap.migration.TestRunner;
 import dev.apigeemap.migration.RuleInfo;
 import dev.apigeemap.migration.ScriptReviewRequest;
@@ -357,15 +359,19 @@ final class UiService {
     }
 
     /**
-     * The regression test plan of the proxy as {@code {plan, written, current}}, {@code current} false when the proxy
-     * changed since it was prepared; without them when it never was. {@code running} tells since when it is being
-     * prepared.
+     * The regression test plan of the proxy as {@code {plan, written, current, targets, uncovered}}, {@code current}
+     * false when the proxy changed since it was prepared, {@code targets} what the plan must cover and {@code
+     * uncovered} those of them no case covers; without them when it never was. {@code running} tells since when it
+     * is being prepared.
      */
     Map<String, Object> testPlan(String id) throws IOException {
-        BundleReport analysis = analyze(settings(), id);
+        Settings s = settings();
+        BundleReport analysis = analyze(s, id);
         Optional<TestPlans.Stored> plan = plans.get(analysis.name());
-        return withRunning("testPlan", id,
-                plan.isEmpty() ? Map.of() : testPlan(plan.get(), current(plan.get().fingerprint(), analysis)));
+        Map<String, Object> m = new LinkedHashMap<>(plan.isEmpty() ? Map.of() : testPlan(plan.get(),
+                current(plan.get().fingerprint(), analysis), targets(s, analysis)));
+        m.put("profile", ProxyProfile.of(analysis));
+        return withRunning("testPlan", id, m);
     }
 
     /**
@@ -374,11 +380,21 @@ final class UiService {
      * While it runs, asking again waits for it.
      */
     Map<String, Object> planTests(String id) throws IOException {
-        return running.run("testPlan", id, () -> prepareTests(id));
+        return planTests(id, Map.of());
     }
 
-    private Map<String, Object> prepareTests(String id) throws IOException {
-        BundleReport analysis = analyze(settings(), id);
+    /**
+     * Same, from {@code {profile, loginForm: {user, password}}}: {@code profile} replaces the detected kind of proxy
+     * when it is {@code standard} or {@code authorizationServer}, and the names of the fields of the identity
+     * provider's login form are those an authorization server's plan fills.
+     */
+    Map<String, Object> planTests(String id, Map<?, ?> request) throws IOException {
+        return running.run("testPlan", id, () -> prepareTests(id, request));
+    }
+
+    private Map<String, Object> prepareTests(String id, Map<?, ?> request) throws IOException {
+        Settings s = settings();
+        BundleReport analysis = analyze(s, id);
         List<ProxyDocs.SourceFile> files = ProxyDocs.files(analysis);
         if (files.stream().mapToLong(f -> f.content().length()).sum() > MAX_PLANNED) {
             throw new UiException(413, "This proxy is too large to plan its tests at once");
@@ -388,6 +404,19 @@ final class UiService {
         body.put("bundles", FixContext.bundles(analysis).values().stream()
                 .map(b -> Map.of("name", b.name(), "type", b.type().label())).toList());
         body.put("files", files);
+        List<TestTargets.Target> targets = targets(s, analysis);
+        body.put("targets", targets);
+        ProxyProfile profile = ProxyProfile.of(analysis).as(request.get("profile") instanceof String chosen ? chosen : null);
+        Map<String, Object> sent = new LinkedHashMap<>();
+        sent.put("kind", profile.kind());
+        sent.put("grants", profile.grants());
+        sent.put("operations", profile.operations());
+        if (profile.authorizationServer()) {
+            Map<?, ?> form = request.get("loginForm") instanceof Map<?, ?> m ? m : Map.of();
+            sent.put("loginForm", Map.of("user", field(form.get("user"), "login"),
+                    "password", field(form.get("password"), "password")));
+        }
+        body.put("profile", sent);
 
         Object answer;
         try {
@@ -399,7 +428,17 @@ final class UiService {
         }
         TestPlans.Plan plan = answer instanceof Map<?, ?> reply ? TestPlans.plan(reply) : null;
         if (plan == null) return Map.of("error", BackendClient.UNAVAILABLE);
-        return testPlan(plans.put(analysis.name(), ProxyDocs.fingerprint(files), plan), true);
+        return testPlan(plans.put(analysis.name(), ProxyDocs.fingerprint(files), plan), true, targets);
+    }
+
+    /** What a test plan of the proxy must cover, with what its migration changes. */
+    private List<TestTargets.Target> targets(Settings s, BundleReport analysis) throws IOException {
+        return TestTargets.of(analysis, migrator(s).migrate(analysis, null).findings());
+    }
+
+    /** The name of a form field as typed, or the default when it is not one. */
+    private static String field(Object typed, String otherwise) {
+        return typed instanceof String s && s.strip().matches("[A-Za-z0-9_.:\\[\\]-]{1,64}") ? s.strip() : otherwise;
     }
 
     /**
@@ -453,11 +492,14 @@ final class UiService {
         return fingerprint.equals(ProxyDocs.fingerprint(ProxyDocs.files(analysis)));
     }
 
-    private static Map<String, Object> testPlan(TestPlans.Stored plan, boolean current) {
+    private static Map<String, Object> testPlan(TestPlans.Stored plan, boolean current,
+                                                List<TestTargets.Target> targets) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("plan", plan.plan());
         m.put("written", plan.written().toString());
         m.put("current", current);
+        m.put("targets", targets);
+        m.put("uncovered", TestTargets.uncovered(targets, plan.plan()).stream().map(TestTargets.Target::id).toList());
         return m;
     }
 

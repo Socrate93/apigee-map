@@ -73,7 +73,7 @@ const api = {
     .then(data => { if (data.error) throw new Error(data.error); return data; }),
   testPlan: id => request('GET', '/api/tests?id=' + encodeURIComponent(id)),
   // a failed test plan answers 200 with an error
-  planTests: id => request('POST', '/api/tests?id=' + encodeURIComponent(id))
+  planTests: (id, options) => request('POST', '/api/tests?id=' + encodeURIComponent(id), options)
     .then(data => { if (data.error) throw new Error(data.error); return data; }),
   runTests: (id, run) => request('POST', '/api/tests/run?id=' + encodeURIComponent(id), run),
   acceptFix: proposal => request('POST', '/api/fix/accept?proposal=' + encodeURIComponent(proposal)),
@@ -936,7 +936,9 @@ function testsPanel(id) {
       ? 'No test plan yet: it lists requests that go through each flow and condition of the proxy, to send to Edge and to hybrid and compare what they answer.'
       : stored.current ? 'Prepared on ' + day(stored.written) + '.'
       : h('span', {}, 'Prepared on ' + day(stored.written) + ': ', h('span', {class: 'WARN'}, 'the proxy changed since, it may be out of date.')));
-    box.replaceChildren(...[h('div', {class: 'review-bar'}, status, button), stored.plan && planView(id, stored.plan)].filter(Boolean));
+    const profile = profileView(id, stored.profile);
+    box.replaceChildren(...[h('div', {class: 'review-bar'}, status, button), profile.element,
+      stored.plan && planView(id, stored.plan, stored.targets || [], stored.uncovered || [])].filter(Boolean));
 
     if (stored.running) prepare(stored.running);
 
@@ -948,7 +950,7 @@ function testsPanel(id) {
       status.replaceChildren('Reading the flows and conditions of the proxy for ', elapsed(since),
         '. This can take a few minutes.');
       try {
-        const prepared = await api.planTests(id);
+        const prepared = await api.planTests(id, profile.options());
         delete testRuns[id];
         show(prepared);
         toast('Test plan prepared: ' + prepared.plan.cases.length + ' request(s)');
@@ -961,7 +963,46 @@ function testsPanel(id) {
   return box;
 }
 
-function planView(id, plan) {
+/**
+ * The kind of proxy the plan is prepared for, as read from its OAuthV2 policies or as chosen, and for an OAuth
+ * authorization server the fields of the identity provider's login form the plan fills; remembered in the browser.
+ */
+function profileView(id, detected) {
+  const saved = loadSaved('apigee-map.tests.profile.' + id);
+  const described = detected.kind === 'authorizationServer'
+    ? 'Detected: OAuth authorization server' + (detected.grants.length ? ' (' + detected.grants.join(', ') + ')' : '') + '.'
+    : 'Detected: standard proxy' + (detected.operations.includes('verify') ? ', which verifies tokens: the plan asks for one.' : '.');
+  const kind = h('select', {'aria-label': 'Plan the tests as'},
+    h('option', {value: ''}, 'As detected'),
+    h('option', {value: 'standard'}, 'Standard proxy'),
+    h('option', {value: 'authorizationServer'}, 'OAuth authorization server'));
+  kind.value = saved.profile || '';
+  const field = (value, label) => h('input', {type: 'text', value, spellcheck: 'false', autocomplete: 'off',
+    class: 'short', 'aria-label': label, oninput: remember});
+  const user = field(saved.user || 'login', 'User field of the login form');
+  const password = field(saved.password || 'password', 'Password field of the login form');
+  const login = h('span', {class: 'login-fields', title: 'Names of the fields of the identity provider\'s login form, which the plan fills to go through the authorization code flow'},
+    'Login form fields ', user, password);
+
+  function remember() {
+    saveSaved('apigee-map.tests.profile.' + id, {profile: kind.value, user: user.value.trim(), password: password.value.trim()});
+    login.hidden = (kind.value || detected.kind) !== 'authorizationServer';
+  }
+  kind.addEventListener('change', remember);
+  login.hidden = (kind.value || detected.kind) !== 'authorizationServer';
+  return {
+    element: h('div', {class: 'export-bar profile-bar'}, h('span', {class: 'sub'}, described),
+      h('label', {class: 'check'}, 'Plan as ', kind), login),
+    options: () => ({profile: kind.value || undefined, loginForm: {user: user.value.trim(), password: password.value.trim()}}),
+  };
+}
+
+/**
+ * The plan, how much of the proxy it covers ({@code targets}, the points read from the proxy and its shared flows,
+ * {@code uncovered} the ids of those no request covers), the run on both environments and the exports.
+ */
+function planView(id, plan, targets, uncovered) {
+  const pointsById = Object.fromEntries(targets.map(t => [t.id, t]));
   const remembered = loadEnvironments(id);
   const edge = h('input', {type: 'text', placeholder: 'https://edge-api.example.com', value: remembered.edge || '', spellcheck: 'false'});
   const hybrid = h('input', {type: 'text', placeholder: 'https://hybrid-api.example.com', value: remembered.hybrid || '', spellcheck: 'false'});
@@ -1006,12 +1047,19 @@ function planView(id, plan) {
         onclick: () => run([i], again)}, 'Run');
       return h('tr', {class: result && result.outcome === 'DIFFERENT' ? 'flagged-row' : ''},
         h('td', {}, h('b', {}, c.name), c.safe ? null : [' ', h('span', {class: 'badge warn', title: 'Changes data on the backend'}, 'changes data')],
-          c.purpose ? h('div', {class: 'sub'}, c.purpose) : null, c.flow ? h('div', {class: 'sub'}, 'Flow ', h('code', {}, c.flow)) : null),
+          c.purpose ? h('div', {class: 'purpose'}, c.purpose) : null,
+          c.covers && c.covers.length ? h('div', {class: 'sub', title: c.covers.map(p => pointsById[p] ? pointsById[p].description : p).join('\n')},
+            'Covers ' + c.covers.length + ' point(s) of the proxy') : null,
+          c.flow ? h('div', {class: 'sub'}, 'Flow ', h('code', {}, c.flow)) : null,
+          c.form ? h('div', {class: 'sub'}, 'Submits the form ', h('code', {}, '{{' + c.form + '}}')) : null,
+          c.captures.length ? h('div', {class: 'sub', title: 'Read from the answer of each environment, for the next requests on the same environment'},
+            'Captures ', c.captures.map((k, n) => [n ? ', ' : '', h('code', {}, '{{' + k.name + '}}'), ' from ' + captureSource(k)])) : null),
         h('td', {}, h('code', {class: 'request'}, c.method + ' ' + c.path),
           c.headers.map(hd => h('div', {class: 'sub mono'}, hd.name + ': ' + hd.value)),
           c.body ? h('details', {class: 'body'}, h('summary', {class: 'sub'}, 'Body'), h('pre', {class: 'mono'}, c.body)) : null),
         h('td', {class: 'nowrap'}, c.expectedStatus || h('span', {class: 'sub'}, 'any'),
-          c.compareHeaders.length ? h('div', {class: 'sub'}, c.compareHeaders.join(', ')) : null),
+          c.compareHeaders.length ? h('div', {class: 'sub'}, c.compareHeaders.join(', ')) : null,
+          c.shapeOnly ? h('div', {class: 'sub', title: 'The answers change on every call: the Location is compared by its parameter names, a JSON body by its keys, the headers by their presence'}, 'shape only') : null),
         h('td', {}, result ? resultView(result) : h('span', {class: 'sub'}, 'Not run')),
         h('td', {class: 'nowrap'}, again));
     }));
@@ -1028,7 +1076,9 @@ function planView(id, plan) {
         unsafe: unsafe.checked, cases: only || undefined});
       const previous = testRuns[id];
       if (only && previous && previous.edge === result.edge && previous.hybrid === result.hybrid) {
-        previous.results = previous.results.filter(r => !only.includes(r.index)).concat(result.results)
+        // with the earlier requests that capture what it uses, run again too
+        const again = result.results.map(r => r.index);
+        previous.results = previous.results.filter(r => !again.includes(r.index)).concat(result.results)
           .sort((a, b) => a.index - b.index);
       } else {
         testRuns[id] = result;
@@ -1070,10 +1120,33 @@ function planView(id, plan) {
     h('div', {class: 'export-bar'}, format, exportLink, exportHint),
     plan.warnings.length ? h('div', {class: 'proposal'}, h('div', {class: 'warnings'}, h('b', {}, 'Before running'),
       h('ul', {}, plan.warnings.map(w => h('li', {}, inlineCode(w)))))) : null,
+    coverageView(targets, uncovered),
     form, summary,
     h('h3', {}, plan.cases.length + ' request(s)'),
     h('div', {class: 'wrap'}, h('table', {class: 'tests'},
       h('thead', {}, h('tr', {}, ['Case', 'Request', 'Expected', 'Result', ''].map(t => h('th', {}, t)))), rows)));
+}
+
+const POINT_KINDS = {flow: 'Flow', route: 'Route rule', faultRule: 'Fault rule', fault: 'Raised fault',
+  change: 'Migration change', oauth: 'OAuth operation', check: 'Check', callout: 'Callout', script: 'Script', condition: 'Conditional step'};
+
+/** How many of the points read from the proxy and its shared flows have a request, and those that have none. */
+function coverageView(targets, uncovered) {
+  if (!targets.length) return null;
+  const missing = targets.filter(t => uncovered.includes(t.id));
+  const line = h('span', {}, (targets.length - missing.length) + ' of ' + targets.length
+    + ' points of the proxy and its shared flows have a request', missing.length ? ': ' : '.',
+    missing.length ? h('span', {class: 'WARN'}, missing.length + ' without one') : null);
+  if (!missing.length) return h('p', {class: 'meta coverage'}, line);
+  return h('details', {class: 'coverage'}, h('summary', {class: 'meta'}, line),
+    h('p', {class: 'sub'}, 'Points no request goes through: prepare the plan again, or test them another way. The warnings may say why some cannot be reached from outside.'),
+    h('ul', {}, missing.map(t => h('li', {}, h('span', {class: 'badge'}, POINT_KINDS[t.kind] || t.kind), ' ',
+      inlineCode(t.description)))));
+}
+
+function captureSource(capture) {
+  return {location: 'the Location', query: capture.key + ' in the Location', header: 'the header ' + capture.key,
+    json: capture.key + ' in the body', form: 'the login form'}[capture.from] || capture.from;
 }
 
 function resultView(result) {
@@ -1087,6 +1160,23 @@ function resultView(result) {
     result.differences.map(d => h('div', {class: 'ERROR result-line'}, d)),
     errors.map(e => h('div', {class: 'WARN result-line'}, e)),
     result.notes.map(n => h('div', {class: 'sub result-line'}, n)));
+}
+
+/** Settings remembered in the browser; they hold no secret. */
+function loadSaved(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key)) || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveSaved(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    // not remembered: chosen again next time
+  }
 }
 
 /** The environment URLs of a proxy, remembered in the browser; they hold no secret. */

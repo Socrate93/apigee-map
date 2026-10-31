@@ -147,7 +147,11 @@ public final class UiServer {
             case "GET /api/document" -> json(exchange, 200, service.documentation(query.get("id")));
             case "POST /api/document" -> json(exchange, 200, service.document(query.get("id")));
             case "GET /api/tests" -> json(exchange, 200, service.testPlan(query.get("id")));
-            case "POST /api/tests" -> json(exchange, 200, service.planTests(query.get("id")));
+            case "POST /api/tests" -> {
+                String body = body(exchange);
+                json(exchange, 200, service.planTests(query.get("id"),
+                        body.isBlank() ? Map.of() : (Map<?, ?>) Json.parse(body)));
+            }
             case "GET /api/tests/export" -> download(exchange,
                     service.exportTests(query.get("id"), query.get("format")));
             case "GET /api/document/export" -> download(exchange, service.exportDocumentation(query.get("id")));

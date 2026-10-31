@@ -28,16 +28,59 @@ public final class TestPlans {
     }
 
     /**
-     * @param path           from the root of the host, base path and query string included
+     * A value read from a response, for the cases after it on the same environment, referenced as {@code {{name}}}
+     * like a variable: each environment keeps its own, as a state or a code only works where it was issued.
+     *
+     * @param from where it is read, one of {@link #CAPTURED_FROM}: the whole {@code location} URL, a parameter of its
+     *             {@code query} string or fragment, a {@code header}, a field of a {@code json} body (a dotted path),
+     *             or the first HTML {@code form} of the body (its action URL, and its fields for a case that submits
+     *             it)
+     * @param key  the parameter, header or path; empty for location and form
+     */
+    public record Capture(String name, String from, String key) {
+    }
+
+    /**
+     * @param path           from the root of the host, base path and query string included, or a captured URL
+     *                       such as {@code {{loginPage}}}
      * @param expectedStatus what the proxy should answer; 0 when it depends on the backend
      * @param compareHeaders response headers, lower case, whose values must be the same on Edge and hybrid
      * @param safe           false when replaying the request changes something
+     * @param captures       what the cases after it read from its response
+     * @param form           the name of a captured form this case submits, to its action, with its fields and those
+     *                       of the body ({@code login={{idpUser}}&...}); empty for none
+     * @param shapeOnly      true when the answers hold codes, tokens or states that change on every call: the
+     *                       Location is compared by its parameter names, a JSON body by its keys, and the compared
+     *                       headers by their presence
+     * @param purpose        why the case is there: what it checks and what it shows when the migration changed it
+     * @param covers         the ids of the {@link TestTargets.Target points} it covers
      */
     public record Case(String name, String flow, String method, String path, List<Header> headers, String body,
-                       int expectedStatus, List<String> compareHeaders, boolean safe, String purpose) {
+                       int expectedStatus, List<String> compareHeaders, boolean safe, String purpose,
+                       List<Capture> captures, String form, boolean shapeOnly, List<String> covers) {
+
+        public Case(String name, String flow, String method, String path, List<Header> headers, String body,
+                    int expectedStatus, List<String> compareHeaders, boolean safe, String purpose,
+                    List<Capture> captures, String form, boolean shapeOnly) {
+            this(name, flow, method, path, headers, body, expectedStatus, compareHeaders, safe, purpose, captures,
+                    form, shapeOnly, List.of());
+        }
+
+        public Case(String name, String flow, String method, String path, List<Header> headers, String body,
+                    int expectedStatus, List<String> compareHeaders, boolean safe, String purpose) {
+            this(name, flow, method, path, headers, body, expectedStatus, compareHeaders, safe, purpose, List.of(), "",
+                    false);
+        }
     }
 
     public record Plan(String summary, List<Variable> variables, List<Case> cases, List<String> warnings) {
+
+        /** The names of the values the cases capture. */
+        public Set<String> captured() {
+            Set<String> names = new java.util.LinkedHashSet<>();
+            cases.forEach(c -> c.captures().forEach(capture -> names.add(capture.name())));
+            return names;
+        }
     }
 
     /** @param fingerprint of the files the plan was prepared from, see {@link ProxyDocs#fingerprint} */
@@ -45,6 +88,8 @@ public final class TestPlans {
     }
 
     static final Set<String> METHODS = Set.of("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS");
+    public static final Set<String> CAPTURED_FROM = Set.of("location", "query", "header", "json", "form");
+    private static final java.util.regex.Pattern NAME = java.util.regex.Pattern.compile("[A-Za-z][A-Za-z0-9_]{0,39}");
 
     private final Path dir;
 
@@ -90,16 +135,34 @@ public final class TestPlans {
 
     /**
      * The plan from its JSON form, as stored or as the backend sends it; cases without a name, a known method or a
-     * path from the root of the host are left out. Null without a summary or a case.
+     * path from the root of the host or a captured URL are left out, and so are captures that read nothing known and
+     * forms that were not captured before. Null without a summary or a case.
      */
     public static Plan plan(Map<?, ?> map) {
         if (!(map.get("summary") instanceof String summary) || summary.isBlank()) return null;
         List<Case> cases = new ArrayList<>();
+        Set<String> forms = new java.util.HashSet<>();
         for (Map<?, ?> c : maps(map.get("cases"))) {
             String name = text(c.get("name"));
             String method = text(c.get("method")).toUpperCase();
             String path = text(c.get("path"));
-            if (name.isEmpty() || !METHODS.contains(method) || !path.startsWith("/")) continue;
+            if (name.isEmpty() || !METHODS.contains(method) || !(path.startsWith("/") || path.startsWith("{{"))) {
+                continue;
+            }
+            String form = text(c.get("form"));
+            if (!forms.contains(form)) form = "";
+            List<Capture> captures = new ArrayList<>();
+            for (Map<?, ?> k : maps(c.get("captures"))) {
+                String captured = text(k.get("name"));
+                String from = text(k.get("from"));
+                String key = text(k.get("key"));
+                if (!NAME.matcher(captured).matches() || !CAPTURED_FROM.contains(from)
+                        || key.isEmpty() != (from.equals("location") || from.equals("form"))) {
+                    continue;
+                }
+                captures.add(new Capture(captured, from, from.equals("header") ? key.toLowerCase() : key));
+                if (from.equals("form")) forms.add(captured);
+            }
             List<Header> headers = new ArrayList<>();
             for (Map<?, ?> h : maps(c.get("headers"))) {
                 String header = text(h.get("name"));
@@ -109,7 +172,8 @@ public final class TestPlans {
             cases.add(new Case(name, text(c.get("flow")), method, path, List.copyOf(headers),
                     c.get("body") instanceof String body ? body : "", expected >= 100 && expected <= 599 ? expected : 0,
                     points(c.get("compareHeaders")).stream().map(String::toLowerCase).toList(),
-                    !Boolean.FALSE.equals(c.get("safe")), text(c.get("purpose"))));
+                    !Boolean.FALSE.equals(c.get("safe")), text(c.get("purpose")), List.copyOf(captures), form,
+                    Boolean.TRUE.equals(c.get("shapeOnly")), points(c.get("covers")).stream().distinct().toList()));
         }
         if (cases.isEmpty()) return null;
         List<Variable> variables = new ArrayList<>();

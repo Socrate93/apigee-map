@@ -1,28 +1,42 @@
 package dev.apigeemap.migration;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.CookieManager;
+import java.net.CookiePolicy;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 /**
  * Replays the cases of a {@link TestPlans.Plan} on Edge then on hybrid, one case after the other, and compares the
  * statuses and the headers the plan names. Redirects are not followed, so that they are compared too; bodies are only
- * compared by their hash, as they often hold timestamps or ids.
+ * compared by their hash, as they often hold timestamps or ids. A case can read values from its responses for the next
+ * ones, such as the state of an OAuth redirect, each environment its own, and the cases whose answers change on every
+ * call compare their shapes only.
  */
 public final class TestRunner {
 
@@ -51,14 +65,13 @@ public final class TestRunner {
     private static final Pattern VARIABLE = Pattern.compile("\\{\\{([A-Za-z][A-Za-z0-9_]{0,39})}}");
     /** Bodies are hashed up to this many bytes. */
     private static final int MAX_BODY = 10_000_000;
+    /** What captures and shapes read of a body: its first bytes. */
+    private static final int MAX_READ = 1_000_000;
 
-    private final HttpClient client;
     private final Duration timeout;
 
     public TestRunner(Duration timeout) {
         this.timeout = timeout;
-        this.client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER)
-                .version(HttpClient.Version.HTTP_1_1).connectTimeout(timeout).build();
     }
 
     /**
@@ -84,8 +97,9 @@ public final class TestRunner {
     }
 
     /**
-     * Runs the cases whose index is in {@code only}, or all of them when it is null; unsafe cases only with {@code
-     * unsafe}.
+     * Runs the cases whose index is in {@code only}, with the earlier cases that capture what they use, or all of
+     * them when it is null; unsafe cases only with {@code unsafe}. Each environment keeps its own captured values
+     * and, when the plan captures any, its own cookies.
      *
      * @param edge   from {@link #baseUrl}
      * @param hybrid from {@link #baseUrl}
@@ -93,95 +107,272 @@ public final class TestRunner {
      */
     public Run run(TestPlans.Plan plan, String edge, String hybrid, Map<String, String> values, boolean unsafe,
                    Set<Integer> only) {
+        Set<Integer> chosen = only == null ? null : withEarlierCaptures(plan, only);
+        boolean chained = !plan.captured().isEmpty();
+        Environment onEdge = new Environment("Edge", edge, client(chained));
+        Environment onHybrid = new Environment("hybrid", hybrid, client(chained));
         List<Result> results = new ArrayList<>();
         for (int i = 0; i < plan.cases().size(); i++) {
-            if (only != null && !only.contains(i)) continue;
-            results.add(run(i, plan.cases().get(i), edge, hybrid, values, unsafe));
+            if (chosen != null && !chosen.contains(i)) continue;
+            results.add(run(i, plan.cases().get(i), onEdge, onHybrid, values, plan.captured(), unsafe));
         }
         return new Run(edge, hybrid, results);
     }
 
-    private Result run(int index, TestPlans.Case c, String edge, String hybrid, Map<String, String> values,
-                       boolean unsafe) {
+    /** The cases, and the earlier ones that capture what they use, the nearest one for each value. */
+    static Set<Integer> withEarlierCaptures(TestPlans.Plan plan, Set<Integer> only) {
+        Set<Integer> chosen = new TreeSet<>();
+        Deque<Integer> pending = new ArrayDeque<>(only);
+        while (!pending.isEmpty()) {
+            int index = pending.pop();
+            if (index < 0 || index >= plan.cases().size() || !chosen.add(index)) continue;
+            for (String name : uses(plan.cases().get(index))) {
+                for (int i = index - 1; i >= 0; i--) {
+                    if (plan.cases().get(i).captures().stream().anyMatch(c -> c.name().equals(name))) {
+                        pending.push(i);
+                        break;
+                    }
+                }
+            }
+        }
+        return chosen;
+    }
+
+    /** The names of the variables and captured values a case uses. */
+    static Set<String> uses(TestPlans.Case c) {
+        Set<String> names = new LinkedHashSet<>();
+        StringBuilder text = new StringBuilder(c.path()).append(' ').append(c.body());
+        c.headers().forEach(h -> text.append(' ').append(h.value()));
+        Matcher matcher = VARIABLE.matcher(text);
+        while (matcher.find()) names.add(matcher.group(1));
+        if (!c.form().isEmpty()) names.add(c.form());
+        return names;
+    }
+
+    private HttpClient client(boolean cookies) {
+        HttpClient.Builder builder = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER)
+                .version(HttpClient.Version.HTTP_1_1).connectTimeout(timeout);
+        // a login page keeps its session in a cookie between showing the form and receiving it
+        if (cookies) builder.cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL));
+        return builder.build();
+    }
+
+    /** One environment during a run: what its responses gave the next cases. */
+    private record Environment(String label, String base, HttpClient client, Map<String, String> captured,
+                               Map<String, Responses.Form> forms) {
+
+        Environment(String label, String base, HttpClient client) {
+            this(label, base, client, new HashMap<>(), new HashMap<>());
+        }
+    }
+
+    /** A request ready to send, or why it cannot be. */
+    private record Prepared(URI uri, String method, Map<String, String> headers, String body, String problem) {
+    }
+
+    /** What an environment answered, with what the captures and shapes read. */
+    private record Answer(Response response, HttpHeaders headers, String text, URI uri) {
+    }
+
+    private Result run(int index, TestPlans.Case c, Environment edge, Environment hybrid, Map<String, String> values,
+                       Set<String> capturable, boolean unsafe) {
         if (!c.safe() && !unsafe) {
             return new Result(index, c.name(), Outcome.SKIPPED, null, null, List.of(),
                     List.of("It changes data: it runs only when unsafe cases are included"));
         }
         List<String> missing = new ArrayList<>();
-        String path = substitute(c.path(), values, missing);
-        Map<String, String> headers = new LinkedHashMap<>();
-        c.headers().forEach(h -> headers.put(h.name(), substitute(h.value(), values, missing)));
-        String body = substitute(c.body(), values, missing);
-        if (!missing.isEmpty()) {
-            return new Result(index, c.name(), Outcome.ERROR, null, null, List.of(),
-                    List.of("No value for " + String.join(", ", missing.stream().distinct()
-                            .map(n -> "{{" + n + "}}").toList())));
-        }
-        Response onEdge = send(edge, c, path, headers, body);
-        Response onHybrid = send(hybrid, c, path, headers, body);
-        List<String> differences = new ArrayList<>();
+        Prepared toEdge = prepare(c, edge, values, capturable, missing);
+        Prepared toHybrid = prepare(c, hybrid, values, capturable, missing);
         List<String> notes = new ArrayList<>();
-        if (onEdge.error() != null || onHybrid.error() != null) {
-            return new Result(index, c.name(), Outcome.ERROR, onEdge, onHybrid, differences, notes);
+        if (!missing.isEmpty()) {
+            notes.add("No value for " + String.join(", ", missing.stream().distinct().map(n -> "{{" + n + "}}").toList()));
         }
-        if (onEdge.status() != onHybrid.status()) {
-            differences.add("Status " + onEdge.status() + " on Edge, " + onHybrid.status() + " on hybrid");
+        Stream.of(toEdge, toHybrid).map(Prepared::problem).filter(Objects::nonNull).distinct().forEach(notes::add);
+        if (!notes.isEmpty()) return new Result(index, c.name(), Outcome.ERROR, null, null, List.of(), notes);
+
+        Answer onEdge = send(toEdge, c, edge);
+        Answer onHybrid = send(toHybrid, c, hybrid);
+        if (onEdge.response().error() != null || onHybrid.response().error() != null) {
+            return new Result(index, c.name(), Outcome.ERROR, onEdge.response(), onHybrid.response(), List.of(),
+                    notes);
         }
-        for (String header : c.compareHeaders()) {
-            String a = onEdge.headers().get(header);
-            String b = onHybrid.headers().get(header);
-            if (a == null ? b != null : !a.equals(b)) {
-                differences.add(header + ": " + shown(a) + " on Edge, " + shown(b) + " on hybrid");
+        capture(c, edge, onEdge, notes);
+        capture(c, hybrid, onHybrid, notes);
+        Response a = onEdge.response();
+        Response b = onHybrid.response();
+        List<String> differences = new ArrayList<>();
+        if (a.status() != b.status()) differences.add("Status " + a.status() + " on Edge, " + b.status() + " on hybrid");
+        for (String header : compared(c)) {
+            String x = a.headers().get(header);
+            String y = b.headers().get(header);
+            if (c.shapeOnly() && !header.equals("location")) {
+                if ((x == null) != (y == null)) {
+                    differences.add(header + ": " + (x == null ? "absent" : "present") + " on Edge, "
+                            + (y == null ? "absent" : "present") + " on hybrid");
+                }
+            } else if (x == null ? y != null : !x.equals(y)) {
+                differences.add(header + ": " + shown(x) + " on Edge, " + shown(y) + " on hybrid");
+            }
+        }
+        if (c.shapeOnly()) {
+            List<String> x = Responses.keys(onEdge.text());
+            List<String> y = Responses.keys(onHybrid.text());
+            if (x != null && y != null && !x.equals(y)) {
+                differences.add("JSON keys " + x + " on Edge, " + y + " on hybrid");
+            } else if ((x == null) != (y == null)) {
+                differences.add("A JSON object on " + (x == null ? "hybrid" : "Edge") + " only");
             }
         }
         if (c.expectedStatus() != 0) {
-            if (onEdge.status() != c.expectedStatus()) {
-                notes.add("Edge answered " + onEdge.status() + ", the plan expects " + c.expectedStatus());
+            if (a.status() != c.expectedStatus()) {
+                notes.add("Edge answered " + a.status() + ", the plan expects " + c.expectedStatus());
             }
-            if (onHybrid.status() != c.expectedStatus()) {
-                notes.add("Hybrid answered " + onHybrid.status() + ", the plan expects " + c.expectedStatus());
+            if (b.status() != c.expectedStatus()) {
+                notes.add("Hybrid answered " + b.status() + ", the plan expects " + c.expectedStatus());
             }
         }
-        if (!onEdge.bodyHash().equals(onHybrid.bodyHash())) {
-            notes.add("The bodies differ: " + onEdge.bodyLength() + " bytes on Edge, " + onHybrid.bodyLength()
-                    + " on hybrid");
+        if (!c.shapeOnly() && !a.bodyHash().equals(b.bodyHash())) {
+            notes.add("The bodies differ: " + a.bodyLength() + " bytes on Edge, " + b.bodyLength() + " on hybrid");
         }
-        return new Result(index, c.name(), differences.isEmpty() ? Outcome.SAME : Outcome.DIFFERENT, onEdge, onHybrid,
+        return new Result(index, c.name(), differences.isEmpty() ? Outcome.SAME : Outcome.DIFFERENT, a, b,
                 differences, notes);
     }
 
-    private Response send(String base, TestPlans.Case c, String path, Map<String, String> headers, String body) {
+    /** The compared headers; with the Location too when the shapes are compared, as it tells where the flow goes. */
+    private static List<String> compared(TestPlans.Case c) {
+        if (!c.shapeOnly() || c.compareHeaders().contains("location")) return c.compareHeaders();
+        List<String> headers = new ArrayList<>(c.compareHeaders());
+        headers.add("location");
+        return headers;
+    }
+
+    /** @param capturable the names the plan captures, which are not variables to give */
+    private Prepared prepare(TestPlans.Case c, Environment env, Map<String, String> values, Set<String> capturable,
+                             List<String> missing) {
+        Map<String, String> known = new HashMap<>(values);
+        known.putAll(env.captured());
+        List<String> absent = new ArrayList<>();
+        Map<String, String> headers = new LinkedHashMap<>();
+        c.headers().forEach(h -> headers.put(h.name(), substitute(h.value(), known, absent)));
+        String problem = null;
+        URI uri = null;
+        String method = c.method();
+        String body;
+        if (!c.form().isEmpty()) {
+            Responses.Form form = env.forms().get(c.form());
+            Map<String, String> fields = new LinkedHashMap<>(form == null ? Map.of() : form.fields());
+            Responses.fields(c.body()).forEach((k, v) -> fields.put(k, substitute(v, known, absent)));
+            body = Responses.encode(fields);
+            if (form == null) {
+                problem = "The form {{" + c.form() + "}} was not captured on " + env.label();
+            } else if (form.method().equals("GET")) {
+                uri = URI.create(form.action().replaceAll("[?#].*$", "") + (body.isEmpty() ? "" : "?" + body));
+                method = "GET";
+                body = "";
+            } else {
+                uri = URI.create(form.action());
+                method = "POST";
+                if (headers.keySet().stream().noneMatch(h -> h.equalsIgnoreCase("content-type"))) {
+                    headers.put("Content-Type", "application/x-www-form-urlencoded");
+                }
+            }
+        } else {
+            body = substitute(c.body(), known, absent);
+            String path = substitute(c.path(), known, absent);
+            try {
+                if (path.startsWith("/")) uri = new URI(env.base() + path);
+                else if (path.matches("(?i)https?://.+")) uri = new URI(path);
+                else problem = c.path() + " is not a path nor a URL on " + env.label();
+            } catch (URISyntaxException e) {
+                problem = "The request is not valid: " + e.getMessage();
+            }
+        }
+        for (String name : absent) {
+            // a value an earlier case did not capture is not one to give
+            if (capturable.contains(name)) {
+                problem = "{{" + name + "}} was not captured on " + env.label();
+            } else {
+                missing.add(name);
+            }
+        }
+        return new Prepared(uri, method, headers, body, problem);
+    }
+
+    private Answer send(Prepared prepared, TestPlans.Case c, Environment env) {
         HttpRequest.Builder request;
         try {
-            request = HttpRequest.newBuilder(new URI(base + path)).timeout(timeout)
-                    .method(c.method(), body.isEmpty() ? HttpRequest.BodyPublishers.noBody()
-                            : HttpRequest.BodyPublishers.ofString(body));
-            headers.forEach(request::header);
-        } catch (URISyntaxException | IllegalArgumentException e) {
-            return failed("The request is not valid: " + e.getMessage());
+            request = HttpRequest.newBuilder(prepared.uri()).timeout(timeout)
+                    .method(prepared.method(), prepared.body().isEmpty() ? HttpRequest.BodyPublishers.noBody()
+                            : HttpRequest.BodyPublishers.ofString(prepared.body()));
+            prepared.headers().forEach(request::header);
+        } catch (IllegalArgumentException e) {
+            return new Answer(failed("The request is not valid: " + e.getMessage()), null, "", prepared.uri());
         }
         try {
-            HttpResponse<InputStream> response = client.send(request.build(), HttpResponse.BodyHandlers.ofInputStream());
+            HttpResponse<InputStream> response = env.client().send(request.build(),
+                    HttpResponse.BodyHandlers.ofInputStream());
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            ByteArrayOutputStream kept = new ByteArrayOutputStream();
             long length = 0;
             try (InputStream in = response.body()) {
                 byte[] buffer = new byte[8192];
-                for (int n; length < MAX_BODY && (n = in.read(buffer)) > 0; length += n) digest.update(buffer, 0, n);
+                for (int n; length < MAX_BODY && (n = in.read(buffer)) > 0; length += n) {
+                    digest.update(buffer, 0, n);
+                    if (kept.size() < MAX_READ) kept.write(buffer, 0, Math.min(n, MAX_READ - kept.size()));
+                }
             }
             Map<String, String> compared = new LinkedHashMap<>();
-            for (String header : c.compareHeaders()) {
+            for (String header : compared(c)) {
                 List<String> found = response.headers().allValues(header);
-                compared.put(header, found.isEmpty() ? null : String.join(", ", found));
+                String value = found.isEmpty() ? null : String.join(", ", found);
+                if (value != null && header.equals("location")) {
+                    String absolute = prepared.uri().resolve(value).toString();
+                    value = c.shapeOnly() ? Responses.shape(absolute, env.base()) : Responses.relative(absolute,
+                            env.base());
+                } else if (value != null && c.shapeOnly()) {
+                    // codes and tokens are not shown
+                    value = "present";
+                }
+                compared.put(header, value);
             }
-            return new Response(response.statusCode(), compared, length, HexFormat.of().formatHex(digest.digest()),
-                    null);
+            return new Answer(new Response(response.statusCode(), compared, length,
+                    HexFormat.of().formatHex(digest.digest()), null), response.headers(),
+                    kept.toString(StandardCharsets.UTF_8), prepared.uri());
         } catch (IOException e) {
-            return failed(e.getClass().getSimpleName() + (e.getMessage() == null ? "" : ": " + e.getMessage()));
+            return new Answer(failed(e.getClass().getSimpleName() + (e.getMessage() == null ? "" : ": "
+                    + e.getMessage())), null, "", prepared.uri());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return failed("Interrupted");
+            return new Answer(failed("Interrupted"), null, "", prepared.uri());
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException(e);
+        }
+    }
+
+    /** Keeps what the case captures from the answer of the environment; what is not found is noted and forgotten. */
+    private static void capture(TestPlans.Case c, Environment env, Answer answer, List<String> notes) {
+        String location = answer.headers().firstValue("location").map(l -> answer.uri().resolve(l).toString())
+                .orElse(null);
+        for (TestPlans.Capture capture : c.captures()) {
+            String value = switch (capture.from()) {
+                case "location" -> location;
+                case "query" -> location == null ? null : Responses.param(location, capture.key());
+                case "header" -> answer.headers().firstValue(capture.key()).orElse(null);
+                case "json" -> Responses.json(answer.text(), capture.key());
+                case "form" -> {
+                    Responses.Form form = Responses.form(answer.text(), answer.uri());
+                    if (form == null) env.forms().remove(capture.name());
+                    else env.forms().put(capture.name(), form);
+                    yield form == null ? null : form.action();
+                }
+                default -> null;
+            };
+            if (value == null || value.isEmpty()) {
+                env.captured().remove(capture.name());
+                notes.add("Nothing to capture as {{" + capture.name() + "}} on " + env.label());
+            } else {
+                env.captured().put(capture.name(), value);
+            }
         }
     }
 

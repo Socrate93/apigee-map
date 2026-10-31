@@ -99,7 +99,8 @@ class TestRunnerTest {
 
         TestRunner.Result redirect = results.get(2);
         assertEquals(302, redirect.edge().status(), "redirects are not followed");
-        assertEquals("/elsewhere", redirect.hybrid().headers().get("location"));
+        assertEquals("{base}/elsewhere", redirect.hybrid().headers().get("location"),
+                "on its own host, so that the same redirect reads the same on both");
 
         assertEquals(TestRunner.Outcome.SKIPPED, results.get(3).outcome(), "it changes data");
         assertEquals(TestRunner.Outcome.ERROR, results.get(4).outcome());
@@ -113,6 +114,70 @@ class TestRunnerTest {
                 created.notes().subList(0, 2));
         assertTrue(received.contains("edge POST /v1/orders k1 {\"key\":\"k1\"}"), received.toString());
         assertTrue(received.contains("hybrid POST /v1/orders k1 {\"key\":\"k1\"}"), received.toString());
+    }
+
+    @Test
+    void chainsTheAuthorizationCodeFlowOnEachEnvironment() throws IOException {
+        try (FakeAuthorizationServer onEdge = new FakeAuthorizationServer(false);
+             FakeAuthorizationServer onHybrid = new FakeAuthorizationServer(true)) {
+            TestPlans.Plan plan = FakeAuthorizationServer.plan();
+            TestRunner runner = new TestRunner(Duration.ofSeconds(5));
+            List<TestRunner.Result> results = runner.run(plan, onEdge.base, onHybrid.base,
+                    FakeAuthorizationServer.VALUES, false, null).results();
+
+            assertEquals(List.of("SAME", "SAME", "SAME", "SAME", "SAME", "DIFFERENT", "SAME"),
+                    results.stream().map(r -> r.outcome().name()).toList(), results.toString());
+            results.forEach(r -> assertEquals(List.of(), r.notes(), r.toString()));
+            assertEquals("{base}/idp/login?client&redirect_uri&state", results.get(1).edge().headers().get("location"),
+                    "the shape, without the state");
+            assertEquals("https://app.example.com/cb?code&state", results.get(4).hybrid().headers().get("location"));
+            assertEquals(List.of("JSON keys [access_token, expires_in, token_type] on Edge, "
+                    + "[access_token, expires_in, scope, token_type] on hybrid"), results.get(5).differences());
+            assertTrue(onEdge.received.contains("POST /idp/login/submit"), onEdge.received.toString());
+
+            Map<String, String> wrong = new java.util.HashMap<>(FakeAuthorizationServer.VALUES);
+            wrong.put("idpPassword", "not-alice");
+            List<TestRunner.Result> refused = runner.run(plan, onEdge.base, onHybrid.base, wrong, false, null)
+                    .results();
+            assertEquals(List.of("Nothing to capture as {{callback}} on Edge",
+                    "Nothing to capture as {{callback}} on hybrid", "Edge answered 200, the plan expects 302",
+                    "Hybrid answered 200, the plan expects 302"), refused.get(3).notes());
+            assertEquals(TestRunner.Outcome.ERROR, refused.get(4).outcome());
+            assertEquals(List.of("{{callback}} was not captured on Edge", "{{callback}} was not captured on hybrid"),
+                    refused.get(4).notes());
+
+            List<TestRunner.Result> userinfo = runner.run(plan, onEdge.base, onHybrid.base,
+                    FakeAuthorizationServer.VALUES, false, Set.of(6)).results();
+            assertEquals(List.of(1, 2, 3, 4, 5, 6), userinfo.stream().map(TestRunner.Result::index).toList(),
+                    "with the cases that capture what it uses");
+            assertEquals(TestRunner.Outcome.SAME, userinfo.get(5).outcome(), userinfo.get(5).toString());
+        }
+    }
+
+    @Test
+    void readsTheValuesOfAResponse() {
+        Responses.Form form = Responses.form("""
+                <form id=login METHOD='post' action="/idp/do?x=1&amp;y=2">
+                  <input type=hidden name=state value="a&quot;b"><input name="user">
+                  <input type="checkbox" name="remember"><input type="checkbox" name="keep" value="yes" checked>
+                  <button>Go</button><input type="submit" name="go" value="Go">
+                </form><form action="/other"><input name="other"></form>
+                """, java.net.URI.create("https://idp.example.com/login/page?s=1"));
+        assertEquals("https://idp.example.com/idp/do?x=1&y=2", form.action());
+        assertEquals("POST", form.method());
+        assertEquals(Map.of("state", "a\"b", "user", "", "keep", "yes"), form.fields());
+        assertNull(Responses.form("<p>No form</p>", java.net.URI.create("https://idp.example.com/")));
+
+        String location = "https://hybrid.example.com/cb?state=s%201&code=c#access_token=t&token_type=Bearer";
+        assertEquals("s 1", Responses.param(location, "state"));
+        assertEquals("t", Responses.param(location, "access_token"));
+        assertNull(Responses.param(location, "missing"));
+        assertEquals("{base}/cb?code&state#access_token&token_type",
+                Responses.shape(location, "https://hybrid.example.com"));
+        assertEquals("b", Responses.json("{\"a\": {\"list\": [\"x\", \"b\"]}}", "a.list.1"));
+        assertEquals("3599", Responses.json("{\"expires_in\": 3599}", "expires_in"));
+        assertNull(Responses.json("<html/>", "a"));
+        assertEquals(List.of("a", "b"), Responses.keys("{\"b\": 1, \"a\": 2}"));
     }
 
     @Test

@@ -300,7 +300,9 @@ class UiFixTest {
 
     @Test
     void preparesKeepsAndRunsTheTestPlan() throws Exception {
-        assertEquals("{}", get("/api/tests?id=factorization-api").body(), "never prepared");
+        Map<?, ?> never = (Map<?, ?>) Json.parse(get("/api/tests?id=factorization-api").body());
+        assertEquals(List.of("profile"), List.copyOf(never.keySet()), "never prepared");
+        assertEquals(Map.of("kind", "standard", "grants", List.of(), "operations", List.of()), never.get("profile"));
         HttpResponse<String> refused = send("/api/tests/run?id=factorization-api", "POST",
                 Json.write(Map.of("edge", "http://127.0.0.1:1", "hybrid", "http://127.0.0.1:1")));
         assertEquals(409, refused.statusCode(), refused.body());
@@ -308,12 +310,29 @@ class UiFixTest {
         HttpResponse<String> response = post("/api/tests?id=factorization-api");
         assertEquals(200, response.statusCode(), response.body());
         Map<?, ?> prepared = (Map<?, ?>) Json.parse(response.body());
-        assertEquals(List.of("plan", "written", "current"), List.copyOf(prepared.keySet()));
+        assertEquals(List.of("plan", "written", "current", "targets", "uncovered"), List.copyOf(prepared.keySet()));
+        List<?> targets = (List<?>) prepared.get("targets");
+        assertTrue(!targets.isEmpty() && targets.equals(planned.get(0).get("targets")), "sent to be covered");
+        assertEquals(targets.stream().map(t -> ((Map<?, ?>) t).get("id")).toList(), prepared.get("uncovered"),
+                "no case says what it covers");
         Map<?, ?> plan = (Map<?, ?>) prepared.get("plan");
         assertEquals("Covers the factors flow.", plan.get("summary"));
         assertEquals(1, ((List<?>) plan.get("cases")).size(), "a case with an unknown method is left out");
         assertEquals("factorization-api", planned.get(0).get("proxy"));
-        assertEquals(prepared, Json.parse(get("/api/tests?id=factorization-api").body()), "kept");
+        assertEquals(Map.of("kind", "standard", "grants", List.of(), "operations", List.of()),
+                planned.get(0).get("profile"));
+        Map<?, ?> kept = new java.util.LinkedHashMap<>((Map<?, ?>) Json.parse(get("/api/tests?id=factorization-api")
+                .body()));
+        kept.remove("profile");
+        assertEquals(prepared, kept, "kept");
+
+        HttpResponse<String> forced = send("/api/tests?id=factorization-api", "POST", Json.write(Map.of(
+                "profile", "authorizationServer", "loginForm", Map.of("user", "username", "password", "pass\nword"))));
+        assertEquals(200, forced.statusCode(), forced.body());
+        assertEquals(Map.of("kind", "authorizationServer", "grants", List.of(), "operations", List.of(),
+                "loginForm", Map.of("user", "username", "password", "password")), planned.get(1).get("profile"),
+                "chosen, with only field names passed on");
+        prepared = (Map<?, ?>) Json.parse(forced.body());
 
         HttpResponse<String> badUrl = send("/api/tests/run?id=factorization-api", "POST",
                 Json.write(Map.of("edge", "ftp://edge", "hybrid", "http://127.0.0.1:1")));
@@ -344,8 +363,10 @@ class UiFixTest {
         backend.stop(0);
         assertEquals(Map.of("error", BackendClient.UNAVAILABLE),
                 Json.parse(post("/api/tests?id=factorization-api").body()));
-        assertEquals(prepared, Json.parse(get("/api/tests?id=factorization-api").body()),
-                "a failure keeps what was prepared");
+        Map<?, ?> still = new java.util.LinkedHashMap<>((Map<?, ?>) Json.parse(get("/api/tests?id=factorization-api")
+                .body()));
+        still.remove("profile");
+        assertEquals(prepared, still, "a failure keeps what was prepared");
     }
 
     @Test

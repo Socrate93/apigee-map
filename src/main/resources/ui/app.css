@@ -190,6 +190,10 @@ table.tests td { font-size: 13px; }
 table.tests code.request { word-break: break-all; }
 table.tests details.body pre { margin: 4px 0 0; max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 table.tests tr.flagged-row td { background: var(--del); }
+table.tests .purpose { color: var(--fg); margin: 2px 0; }
+.coverage { margin: 12px 0; }
+.coverage ul { margin: 6px 0 0; padding-left: 18px; }
+.coverage li { margin: 3px 0; }
 .result-line { font-size: 12px; margin-top: 2px; word-break: break-word; }
 @media (max-width: 760px) {
     table.tests thead { display: none; }
@@ -200,3 +204,7 @@ table.tests tr.flagged-row td { background: var(--del); }
 }
 .export-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
 .export-bar .sub { flex: 1 1 260px; }
+.profile-bar { margin: 4px 0 12px; }
+.profile-bar input.short { width: 110px; }
+.login-fields { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.login-fields[hidden] { display: none; }

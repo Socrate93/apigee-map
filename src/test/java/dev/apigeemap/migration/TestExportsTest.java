@@ -111,6 +111,40 @@ class TestExportsTest {
         assertTrue(missing.code() != 0 && missing.output().contains("orderId"), missing.output());
     }
 
+    @Test
+    void theCurlScriptChainsTheFlowOnEachEnvironment() throws Exception {
+        Path probe = tmp.resolve("probe.sh");
+        Files.writeString(probe, "curl --version > /dev/null\n");
+        assumeTrue(runs("bash", probe.toString()), "bash and curl are needed to run the script");
+        try (FakeAuthorizationServer onEdge = new FakeAuthorizationServer(false);
+             FakeAuthorizationServer onHybrid = new FakeAuthorizationServer(true)) {
+            Path script = tmp.resolve("oauth.sh");
+            Files.writeString(script, TestExports.write(TestExports.Format.CURL, "oauth", FakeAuthorizationServer.plan()));
+            Map<String, String> env = new java.util.HashMap<>(FakeAuthorizationServer.VALUES);
+            env.put("EDGE", onEdge.base);
+            env.put("HYBRID", onHybrid.base);
+
+            Result run = bash(script, env);
+            assertEquals(1, run.code(), run.output());
+            assertTrue(run.output().contains("SAME       CORS preflight (204)\n"
+                    + "SAME       Authorize (302)\n"
+                    + "SAME       Login page (200)\n"
+                    + "SAME       Log in (302)\n"
+                    + "SAME       IdP callback (302)\n"
+                    + "DIFFERENT  Token\n"
+                    + "           JSON keys [access_token, expires_in, token_type] on Edge, "
+                    + "[access_token, expires_in, scope, token_type] on hybrid\n"
+                    + "SAME       Userinfo (200)\n"), run.output());
+            assertTrue(run.output().contains("6 same, 1 different, 0 error(s), 0 skipped"), run.output());
+
+            env.put("idpPassword", "not-alice");
+            Result refused = bash(script, env);
+            assertTrue(refused.output().contains("nothing to capture as callback on edge"), refused.output());
+            assertTrue(refused.output().contains("ERROR      IdP callback: callback was not captured on edge"),
+                    refused.output());
+        }
+    }
+
     /** Whether the command starts and succeeds, so that the script can run on this machine. */
     private static boolean runs(String... command) {
         try {
@@ -153,7 +187,7 @@ class TestExportsTest {
         List<?> items = (List<?>) collection.get("item");
         Map<?, ?> get = (Map<?, ?>) items.get(0);
         Map<?, ?> request = (Map<?, ?>) get.get("request");
-        assertEquals("{{edgeUrl}}/v1/orders/{{orderId}}?q='x'", ((Map<?, ?>) request.get("url")).get("raw"));
+        assertEquals("{{edgeUrl}}/v1/orders/{{orderId}}?q='x'", request.get("url"), "a string, that newman reads too");
         assertEquals(List.of(Map.of("key", "x-apikey", "value", "{{apikey}}")), request.get("header"));
         assertEquals(Map.of("followRedirects", false), get.get("protocolProfileBehavior"));
         String test = script(get, "test");
