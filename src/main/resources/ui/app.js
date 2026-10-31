@@ -1613,6 +1613,10 @@ function svg(tag, attrs, ...children) {
   return element;
 }
 
+const PANEL_KEY = 'apigee-map.editor.panel';
+const PANEL_MIN_HEIGHT = 80;
+const CODE_MIN_HEIGHT = 160;
+
 async function editorView(id, isCurrent) {
   const [workspace, monaco] = await Promise.all([api.editor(id), loadMonaco()]);
   if (!isCurrent()) return null;
@@ -1653,7 +1657,10 @@ async function editorView(id, isCurrent) {
   const problemsHead = h('div', {class: 'editor-problems-head'});
   const problemsList = h('div', {class: 'editor-problems-list'});
   const problemsPanel = h('div', {class: 'editor-problems'}, problemsHead, problemsList);
-  const variablesHead = h('div', {class: 'editor-problems-head'});
+  const variablesChips = h('div', {});
+  const variablesFilter = h('input', {type: 'search', placeholder: 'Filter by variable', 'aria-label': 'Filter by variable',
+    oninput: () => renderVariables()});
+  const variablesHead = h('div', {class: 'editor-problems-head'}, variablesChips, variablesFilter);
   const variablesList = h('div', {class: 'editor-problems-list'});
   const policiesList = h('div', {class: 'editor-problems-list'});
   const usageHead = h('div', {class: 'editor-problems-head meta'});
@@ -1959,14 +1966,16 @@ async function editorView(id, isCurrent) {
   function renderVariables() {
     const toCheck = v => v.readBy.some(u => READ_PROBLEMS.includes(u.source));
     const all = outline?.variables || [];
-    const shown = all.filter(v => variablesShown === 'all' || toCheck(v));
-    variablesHead.replaceChildren(
+    const text = variablesFilter.value.trim().toLowerCase();
+    const shown = all.filter(v => (variablesShown === 'all' || toCheck(v)) && v.name.toLowerCase().includes(text));
+    variablesChips.replaceChildren(
       chips([['all', 'All ' + all.length], ['check', 'To check ' + all.filter(toCheck).length]], variablesShown, value => {
         variablesShown = value;
         renderVariables();
       }));
     if (!shown.length) {
-      variablesList.replaceChildren(h('p', {class: 'meta'}, outline ? 'Nothing to report.' : 'The variables show once the proxy can be analyzed.'));
+      variablesList.replaceChildren(h('p', {class: 'meta'}, !outline ? 'The variables show once the proxy can be analyzed.'
+        : text ? 'No variable matches this filter.' : 'Nothing to report.'));
       return;
     }
     variablesList.replaceChildren(h('table', {class: 'editor-outline-table'},
@@ -2665,6 +2674,52 @@ async function editorView(id, isCurrent) {
     opened.forEach(file => file.model.dispose());
   };
 
+  const panelSection = h('section', {class: 'editor-panel', 'aria-label': 'Panel'}, panelBar, panelBody);
+
+  function setPanelHeight(height) {
+    if (height) page.style.setProperty('--panel-height', Math.round(height) + 'px');
+    else page.style.removeProperty('--panel-height');
+  }
+
+  /** The height asked for, kept to what leaves the panel its tabs and the code some room, as app.css does on a small window. */
+  function fitPanelHeight(height) {
+    return Math.max(PANEL_MIN_HEIGHT, Math.min(height, page.clientHeight - CODE_MIN_HEIGHT));
+  }
+
+  /** The top edge of the bottom panel: drag it or use the arrow keys; a double click gives the default height back. */
+  function panelHandle() {
+    let start = null;
+    return h('div', {class: 'editor-panel-resize', role: 'separator', 'aria-orientation': 'horizontal', tabindex: 0,
+      'aria-label': 'Resize the panel', title: 'Drag to resize, double-click for the default height',
+      onpointerdown: e => {
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        start = {y: e.clientY, height: panelSection.offsetHeight};
+      },
+      onpointermove: e => {
+        if (start) setPanelHeight(fitPanelHeight(start.height + start.y - e.clientY));
+      },
+      onpointerup: () => {
+        start = null;
+        saveSaved(PANEL_KEY, {height: panelSection.offsetHeight});
+      },
+      onpointercancel: () => { start = null; },
+      ondblclick: () => {
+        setPanelHeight(null);
+        saveSaved(PANEL_KEY, {});
+      },
+      onkeydown: e => {
+        const step = {ArrowUp: 24, ArrowDown: -24}[e.key];
+        if (!step) return;
+        e.preventDefault();
+        const height = fitPanelHeight(panelSection.offsetHeight + step);
+        setPanelHeight(height);
+        saveSaved(PANEL_KEY, {height});
+      }});
+  }
+
+  panelSection.prepend(panelHandle());
+
   const page = pageElement = h('div', {class: 'editor-page'},
     h('div', {class: 'editor-head'},
       h('a', {href: '#/proxy/' + encodeURIComponent(id)}, '← ' + workspace.proxy),
@@ -2672,8 +2727,9 @@ async function editorView(id, isCurrent) {
       h('span', {class: 'spacer'}),
       composeButton, renameButton, newPolicyButton, saveButton),
     h('div', {class: 'editor-body'}, tree, h('div', {class: 'editor-main'}, tabBar, host), rail),
-    h('section', {class: 'editor-panel', 'aria-label': 'Panel'}, panelBar, panelBody), usageTip);
+    panelSection, usageTip);
 
+  setPanelHeight(loadSaved(PANEL_KEY).height);
   renderAll();
   const first = workspace.bundles[0].files.find(f => f.path === editorReturn)
     || workspace.bundles[0].files.find(f => f.text && f.path.startsWith('proxies/'))

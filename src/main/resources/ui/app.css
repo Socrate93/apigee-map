@@ -210,7 +210,7 @@ table.tests .purpose { color: var(--fg); margin: 2px 0; }
 .login-fields { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .login-fields[hidden] { display: none; }
 
-.editor-page { display: grid; grid-template-rows: auto minmax(0, 1fr) 225px; height: calc(100vh - 52px); }
+.editor-page { display: grid; grid-template-rows: auto minmax(0, 1fr) min(var(--panel-height, 225px), calc(100% - 160px)); height: calc(100vh - 52px); }
 .editor-head { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: var(--card); border-bottom: 1px solid var(--line); }
 .editor-head .meta { margin: 0; }
 .editor-head .spacer { flex: 1; }
@@ -246,14 +246,18 @@ table.tests .purpose { color: var(--fg); margin: 2px 0; }
 .editor-tab.on { background: var(--card); }
 .editor-tab.on button { color: var(--fg); }
 .editor-host { min-height: 0; overflow: hidden; }
-.editor-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; background: var(--card); border-top: 1px solid var(--line); }
+.editor-panel { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; background: var(--card); border-top: 1px solid var(--line); }
+.editor-panel-resize { position: absolute; top: -4px; left: 0; right: 0; z-index: 5; height: 7px; cursor: row-resize; touch-action: none; outline: none; }
+.editor-panel-resize:hover, .editor-panel-resize:focus-visible, .editor-panel-resize:active { background: var(--accent); }
+.editor-page.no-panel .editor-panel-resize { display: none; }
 .editor-panel-body { display: grid; grid-template-rows: minmax(0, 1fr); min-height: 0; min-width: 0; }
 .editor-panel-body > [hidden] { display: none; }
 .editor-problems { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; }
 .editor-problems-head { display: flex; align-items: center; gap: 12px; padding: 6px 16px; border-bottom: 1px solid var(--line); }
+.editor-problems-head input[type=search] { flex: 0 1 280px; min-width: 0; padding: 3px 8px; }
 .editor-problems-list { overflow-y: auto; padding: 2px 8px; }
 .editor-problems-list .meta { padding: 8px; }
-.editor-page.simulating { grid-template-rows: auto minmax(0, 1fr) 46vh; }
+.editor-page.simulating { grid-template-rows: auto minmax(0, 1fr) min(var(--panel-height, 46vh), calc(100% - 160px)); }
 .editor-page.no-panel { grid-template-rows: auto minmax(0, 1fr) auto; }
 .editor-file.deleted .name { text-decoration: line-through; }
 .editor-panel-tabs { display: flex; }
