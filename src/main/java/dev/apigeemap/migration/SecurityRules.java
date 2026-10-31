@@ -78,44 +78,57 @@ final class SecurityRules {
         for (Policy policy : ctx.policies("AssignMessage")) {
             Element root = ctx.xml(policy);
             List<String> found = new ArrayList<>();
+            Element first = null;
             for (String element : List.of("Header", "QueryParam", "FormParam")) {
                 for (Element param : Xml.descendants(root, element)) {
                     String name = Xml.attr(param, "name");
                     String value = Xml.text(param);
-                    if (name != null && secret(name, value)) found.add(element + " " + name);
+                    if (name != null && secret(name, value)) {
+                        found.add(element + " " + name);
+                        if (first == null) first = param;
+                    }
                 }
             }
             for (Element variable : Xml.descendants(root, "AssignVariable")) {
                 String name = Xml.text(variable, "Name");
                 if (name != null && secret(name, Xml.text(variable, "Value"))) {
                     found.add("variable " + name);
+                    if (first == null) first = variable;
                 }
             }
             if (!found.isEmpty()) {
-                ctx.manual(ERROR, policy.name(), "Credentials in clear text: " + names(found), action, ctx.on(policy));
+                ctx.manual(ERROR, policy.name(), "Credentials in clear text: " + names(found), action,
+                        ctx.on(policy, first));
             }
         }
         for (Policy policy : ctx.policies("KeyValueMapOperations")) {
             List<String> keys = new ArrayList<>();
+            Element first = null;
             for (Element entry : Xml.descendants(ctx.xml(policy), "Entry")) {
                 String key = Xml.descendants(entry, "Parameter").stream().map(Xml::text)
                         .reduce((a, b) -> a + "." + b).orElse("");
-                if (SECRET.matcher(key).find() && Xml.text(entry, "Value") != null) keys.add(key);
+                if (SECRET.matcher(key).find() && Xml.text(entry, "Value") != null) {
+                    keys.add(key);
+                    if (first == null) first = entry;
+                }
             }
             if (!keys.isEmpty()) {
                 ctx.manual(ERROR, policy.name(), "InitialEntries ship secret values in the bundle: " + names(keys),
                         "Remove the InitialEntries and load the values into the KVM with the management API.",
-                        ctx.on(policy));
+                        ctx.on(policy, first));
             }
         }
         for (String file : ctx.workspace.resources("jsc")) {
             Matcher matcher = JS_SECRET.matcher(ctx.workspace.read(file));
             List<String> hits = new ArrayList<>();
+            String first = null;
             while (matcher.find()) {
-                if (!locator(matcher.group(1), matcher.group(2))) hits.add(matcher.group().replace(matcher.group(2), "***"));
+                if (locator(matcher.group(1), matcher.group(2))) continue;
+                hits.add(matcher.group().replace(matcher.group(2), "***"));
+                if (first == null) first = matcher.group();
             }
             if (hits.isEmpty()) continue;
-            List<Finding.Subject> subjects = new ArrayList<>(ctx.onFile(file));
+            List<Finding.Subject> subjects = new ArrayList<>(ctx.onFile(file, first));
             for (Scripts.Script script : Scripts.of(ctx.report)) {
                 if (script.file().equals(file)) subjects.addAll(ctx.on(script));
             }
@@ -148,7 +161,7 @@ final class SecurityRules {
                 ctx.manual(WARN, policy.name(), "Secret read from the KVM into " + assignTo
                                 + ", which is visible in Debug sessions",
                         "Assign it to private." + assignTo + " and update the policies that read it.",
-                        ctx.on(policy));
+                        ctx.on(policy, get));
             }
         }
     }
@@ -171,18 +184,19 @@ final class SecurityRules {
         boolean sslEnabled = ssl != null && "true".equalsIgnoreCase(Xml.text(ssl, "Enabled"));
         if (url != null && url.startsWith("http://")) {
             ctx.manual(INFO, location, "Backend called over plain HTTP: " + url,
-                    "Use HTTPS if the backend leaves the cluster network.", subjects);
+                    "Use HTTPS if the backend leaves the cluster network.",
+                    MigrationContext.at(subjects, Xml.path(connection, "URL")));
         }
         if ((sslEnabled || (url != null && url.startsWith("https://"))) && Xml.text(ssl, "TrustStore") == null) {
             ctx.manual(WARN, location, "TLS to the backend without a truststore: its certificate is not verified",
                     "Add a TrustStore (through a reference) holding the backend CA, and set IgnoreValidationErrors"
-                            + " to false.", subjects);
+                            + " to false.", MigrationContext.at(subjects, ssl != null ? ssl : Xml.path(connection, "URL")));
         }
         List<String> weak = Xml.descendants(ssl, "Protocol").stream().map(Xml::text)
                 .filter(WEAK_PROTOCOLS::contains).toList();
         if (!weak.isEmpty()) {
             ctx.manual(WARN, location, "Obsolete TLS protocols allowed: " + names(weak), "Allow TLSv1.2 and TLSv1.3 only.",
-                    subjects);
+                    MigrationContext.at(subjects, ssl));
         }
     }
 
@@ -192,7 +206,7 @@ final class SecurityRules {
                 if ("access-control-allow-origin".equalsIgnoreCase(Xml.attr(header, "name"))
                         && "*".equals(Xml.text(header))) {
                     ctx.manual(WARN, policy.name(), "CORS allows every origin (Access-Control-Allow-Origin: *)",
-                            "Use the CORS policy with the explicit list of allowed origins.", ctx.on(policy));
+                            "Use the CORS policy with the explicit list of allowed origins.", ctx.on(policy, header));
                 }
             }
         }

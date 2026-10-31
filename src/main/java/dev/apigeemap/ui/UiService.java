@@ -1057,6 +1057,26 @@ final class UiService {
         return new BundleAnalyzer(repository(s)).analyze(BundleLocator.locate(resolve(s, id)));
     }
 
+    /** The folder of the bundle of the proxy, absolute. */
+    Path bundleDir(String id) throws IOException {
+        return BundleLocator.locate(resolve(settings(), id)).toAbsolutePath().normalize();
+    }
+
+    /** The proxy as saved. */
+    BundleReport analyzed(String id) throws IOException {
+        return analyze(settings(), id);
+    }
+
+    /** An analyzer that resolves shared flows from the folders of the settings. */
+    BundleAnalyzer analyzer() throws IOException {
+        return new BundleAnalyzer(repository(settings()));
+    }
+
+    /** The findings of a bundle, with the rules and the false positives of the settings; nothing is written. */
+    MigrationReport migrate(BundleReport analysis) throws IOException {
+        return migrator(settings()).migrate(analysis, null);
+    }
+
     /** The proxy folder for an id, refusing anything outside the proxies root. */
     private static Path resolve(Settings s, String id) {
         if (s.proxiesRoot().isEmpty()) throw new UiException(409, "Set the proxies folder in Settings first");

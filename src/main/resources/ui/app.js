@@ -84,6 +84,11 @@ const api = {
   history: id => request('GET', '/api/history?id=' + encodeURIComponent(id)),
   stepDiff: (id, bundle, step) => request('GET', '/api/history/diff?' + stepQuery(id, bundle, step)),
   revertStep: (id, bundle, step) => request('POST', '/api/history/revert?' + stepQuery(id, bundle, step)),
+  editor: id => request('GET', '/api/editor?id=' + encodeURIComponent(id)),
+  editorFile: (id, bundle, path) => request('GET', '/api/editor/file?id=' + encodeURIComponent(id)
+    + '&bundle=' + encodeURIComponent(bundle) + '&path=' + encodeURIComponent(path)),
+  editorCheck: (id, buffers) => request('POST', '/api/editor/check?id=' + encodeURIComponent(id), {buffers}),
+  editorSave: (id, files) => request('POST', '/api/editor/save?id=' + encodeURIComponent(id), {files}),
 };
 
 function stepQuery(id, bundle, step) {
@@ -175,17 +180,21 @@ function chips(options, selected, onChange) {
 
 let renderToken = 0;
 let leaveGuard = null;
+let leaveView = null;
 let currentHash = location.hash;
 
 /** Renders the view for the current hash; results of a previous, slower render are dropped. */
 async function route() {
   const [name = 'proxies', ...rest] = location.hash.replace(/^#\/?/, '').split('/');
-  const routes = {proxies: proxiesView, proxy: proxyView, overview: overviewView, settings: settingsView};
+  const routes = {proxies: proxiesView, proxy: proxyView, editor: editorView, overview: overviewView, settings: settingsView};
   const render = routes[name] || proxiesView;
   document.querySelectorAll('[data-nav]').forEach(a =>
-    a.classList.toggle('active', a.dataset.nav === (name === 'proxy' ? 'proxies' : name)));
+    a.classList.toggle('active', a.dataset.nav === (name === 'proxy' || name === 'editor' ? 'proxies' : name)));
+  document.body.classList.toggle('wide', name === 'editor');
   const token = ++renderToken;
   leaveGuard = null;
+  if (leaveView) leaveView();
+  leaveView = null;
   view.replaceChildren(h('div', {class: 'loading'}, 'Loading…'));
   try {
     const content = await render(decodeURIComponent(rest.join('/')), () => token === renderToken);
@@ -336,6 +345,7 @@ async function proxyView(id) {
   const stale = migration.bundles.flatMap(b => b.staleFalsePositives);
   const files = migration.bundles.flatMap(b => b.files);
   const tabs = [
+    ['editor', 'Editor', null],
     ['findings', 'Findings', findings.length],
     ['documentation', 'Documentation', null],
     ['tests', 'Regression tests', null],
@@ -348,6 +358,10 @@ async function proxyView(id) {
   const panel = h('div', {});
   const tabBar = h('div', {class: 'tabs', role: 'tablist'});
   function showTab(tab) {
+    if (tab === 'editor') {
+      location.hash = '#/editor/' + encodeURIComponent(id);
+      return;
+    }
     detailState.tab = tab;
     tabBar.replaceChildren(...tabs.map(([key, label, n]) => h('button', {type: 'button', role: 'tab',
         class: key === tab ? 'on' : '', 'aria-selected': String(key === tab), onclick: () => showTab(key)},
@@ -1372,6 +1386,273 @@ function mapPanel(id) {
   return h('div', {},
     h('p', {class: 'meta', style: 'margin-top:16px'}, 'The graph is drawn with Mermaid, loaded from the internet; the tables below it work offline.'),
     h('iframe', {class: 'frame', title: 'Dependency map', src: '/api/map?id=' + encodeURIComponent(id)}));
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Editor
+// ---------------------------------------------------------------------------------------------------------------
+
+/** How long typing has to pause before what was typed is checked. */
+const CHECK_DELAY = 500;
+const LANGUAGES = {xml: 'xml', xsl: 'xml', xslt: 'xml', xsd: 'xml', wsdl: 'xml', js: 'javascript', py: 'python', json: 'json'};
+let monacoLoad = null;
+
+function loadMonaco() {
+  monacoLoad = monacoLoad || new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = '/assets/monaco/vs/loader.js';
+    script.onerror = () => reject(new Error('The code editor could not be loaded'));
+    script.onload = () => {
+      window.require.config({paths: {vs: '/assets/monaco/vs'}});
+      window.require(['vs/editor/editor.main'], () => resolve(window.monaco), reject);
+    };
+    document.head.append(script);
+  });
+  return monacoLoad;
+}
+
+function fileKey(bundle, path) {
+  return bundle + '\n' + path;
+}
+
+function worst(problems) {
+  return SEVERITIES.find(s => problems.some(p => p.severity === s));
+}
+
+async function editorView(id, isCurrent) {
+  const [workspace, monaco] = await Promise.all([api.editor(id), loadMonaco()]);
+  if (!isCurrent()) return null;
+
+  const root = workspace.bundles[0].name;
+  const shared = new Set(workspace.bundles.slice(1).map(b => b.name));
+  const opened = new Map();
+  const tabs = [];
+  let active = null;
+  let findings = [];
+  let syntax = [];
+  let general = [];
+  let scope = 'all';
+  let timer = null;
+  let checks = 0;
+  let saving = false;
+
+  const status = h('span', {class: 'meta'});
+  const saveButton = h('button', {type: 'button', class: 'primary', onclick: save}, 'Save');
+  const tree = h('nav', {class: 'editor-tree', 'aria-label': 'Files'});
+  const tabBar = h('div', {class: 'editor-tabs', role: 'tablist'});
+  const host = h('div', {class: 'editor-host'});
+  const problemsHead = h('div', {class: 'editor-problems-head'});
+  const problemsList = h('div', {class: 'editor-problems-list'});
+
+  const editor = monaco.editor.create(host, {
+    automaticLayout: true, minimap: {enabled: false}, fontSize: 13, scrollBeyondLastLine: false, model: null,
+    theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'vs-dark' : 'vs',
+  });
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, save);
+
+  const dirty = () => [...opened.values()].filter(f => f.model.getValue() !== f.base);
+  const problems = () => [...syntax, ...findings];
+  const label = p => p.bundle === root ? p.file : p.bundle + '/' + p.file;
+
+  /** A proxy opened broken is known by its id until it can be analyzed: its problems are about the same bundle. */
+  function localized(list) {
+    return list.map(p => ({...p, bundle: shared.has(p.bundle) ? p.bundle : root}));
+  }
+
+  function renderTree() {
+    const all = problems();
+    tree.replaceChildren(...workspace.bundles.map(bundle => {
+      const folders = new Map();
+      for (const file of bundle.files) {
+        const slash = file.path.lastIndexOf('/');
+        const folder = slash < 0 ? '' : file.path.slice(0, slash);
+        if (!folders.has(folder)) folders.set(folder, []);
+        folders.get(folder).push(file);
+      }
+      return h('section', {},
+        h('h3', {}, bundle.name, bundle.editable ? null : h('span', {class: 'badge'}, 'read-only')),
+        [...folders].map(([folder, files]) => [
+          folder ? h('div', {class: 'editor-folder'}, folder) : null,
+          files.map(file => {
+            const key = fileKey(bundle.name, file.path);
+            const here = all.filter(p => p.bundle === bundle.name && p.file === file.path);
+            const changed = opened.has(key) && opened.get(key).model.getValue() !== opened.get(key).base;
+            const name = file.path.slice(file.path.lastIndexOf('/') + 1);
+            return h('button', {type: 'button', class: 'editor-file' + (key === active ? ' on' : ''), disabled: !file.text,
+                title: file.text ? file.path : 'Too large, or not UTF-8 text',
+                onclick: () => open(bundle.name, file.path, bundle.editable)},
+              h('span', {class: 'name'}, (changed ? '● ' : '') + name),
+              here.length ? h('span', {class: 'badge ' + (worst(here) === 'ERROR' ? 'bad' : worst(here) === 'WARN' ? 'warn' : '')}, here.length) : null);
+          })]));
+    }));
+  }
+
+  function renderTabs() {
+    tabBar.replaceChildren(...tabs.map(key => {
+      const file = opened.get(key);
+      return h('div', {class: 'editor-tab' + (key === active ? ' on' : ''), role: 'tab', 'aria-selected': String(key === active)},
+        h('button', {type: 'button', class: 'link', title: file.path, onclick: () => open(file.bundle, file.path)},
+          (file.model.getValue() !== file.base ? '● ' : '') + file.path.slice(file.path.lastIndexOf('/') + 1)),
+        h('button', {type: 'button', class: 'link', 'aria-label': 'Close ' + file.path, onclick: () => closeTab(key)}, '×'));
+    }));
+  }
+
+  function renderProblems() {
+    const all = problems();
+    const file = active && opened.get(active);
+    const here = all.filter(p => file && p.bundle === file.bundle && p.file === file.path);
+    const shown = scope === 'file' ? here : [...all, ...general];
+    problemsHead.replaceChildren(
+      h('strong', {}, 'Problems'),
+      chips([['all', 'All ' + (all.length + general.length)], ['file', 'This file ' + here.length]], scope, value => {
+        scope = value || 'all';
+        renderProblems();
+      }));
+    problemsList.replaceChildren(...(shown.length ? shown.map(p => {
+      const place = p.file ? label(p) + (p.span ? ':' + p.span.line : '') : 'Proxy';
+      return h('button', {type: 'button', class: 'editor-problem', disabled: !p.file,
+          onclick: () => p.file && open(p.bundle, p.file, p.bundle === root, p.span)},
+        severity(p.severity),
+        p.rule ? h('span', {class: 'mono'}, p.rule) : null,
+        h('span', {class: 'text', title: p.action || ''}, p.message),
+        h('span', {class: 'mono place'}, place));
+    }) : [h('p', {class: 'meta'}, 'Nothing to report.')]));
+  }
+
+  function renderMarkers() {
+    const severities = {ERROR: monaco.MarkerSeverity.Error, WARN: monaco.MarkerSeverity.Warning, INFO: monaco.MarkerSeverity.Info};
+    const all = problems();
+    for (const file of opened.values()) {
+      monaco.editor.setModelMarkers(file.model, 'apigee-map', all
+        .filter(p => p.bundle === file.bundle && p.file === file.path && p.span)
+        .map(p => ({severity: severities[p.severity], source: p.rule || 'XML', message: p.message + (p.action ? '\n\n' + p.action : ''),
+          startLineNumber: p.span.line, startColumn: p.span.column, endLineNumber: p.span.endLine, endColumn: p.span.endColumn})));
+    }
+  }
+
+  function renderAll() {
+    renderTree();
+    renderTabs();
+    renderProblems();
+    renderMarkers();
+    saveButton.disabled = !dirty().length;
+  }
+
+  async function open(bundle, path, editable, span) {
+    const key = fileKey(bundle, path);
+    if (!opened.has(key)) {
+      let content;
+      try {
+        ({content} = await api.editorFile(id, bundle, path));
+      } catch (error) {
+        toast(error.message, true);
+        return;
+      }
+      if (!isCurrent()) return;
+      const language = LANGUAGES[path.slice(path.lastIndexOf('.') + 1).toLowerCase()] || 'plaintext';
+      const model = monaco.editor.createModel(content, language);
+      opened.set(key, {bundle, path, editable, base: content, model});
+      model.onDidChangeContent(() => {
+        renderTree();
+        renderTabs();
+        saveButton.disabled = !dirty().length;
+        schedule();
+      });
+    }
+    if (!tabs.includes(key)) tabs.push(key);
+    active = key;
+    const file = opened.get(key);
+    editor.setModel(file.model);
+    editor.updateOptions({readOnly: !file.editable});
+    renderAll();
+    if (span) {
+      editor.setSelection({startLineNumber: span.line, startColumn: span.column, endLineNumber: span.endLine, endColumn: span.endColumn});
+      editor.revealRangeInCenterIfOutsideViewport(editor.getSelection());
+    }
+    editor.focus();
+  }
+
+  function closeTab(key) {
+    const index = tabs.indexOf(key);
+    tabs.splice(index, 1);
+    if (active === key) {
+      active = tabs[Math.min(index, tabs.length - 1)] || null;
+      const next = active && opened.get(active);
+      editor.setModel(next ? next.model : null);
+      if (next) editor.updateOptions({readOnly: !next.editable});
+    }
+    renderAll();
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    status.textContent = 'Checking…';
+    timer = setTimeout(check, CHECK_DELAY);
+  }
+
+  async function check() {
+    const asked = ++checks;
+    const started = performance.now();
+    let result;
+    try {
+      result = await api.editorCheck(id, dirty().map(f => ({path: f.path, content: f.model.getValue()})));
+    } catch (error) {
+      if (asked === checks && isCurrent()) status.textContent = error.message;
+      return;
+    }
+    if (asked !== checks || !isCurrent()) return;
+    syntax = [];
+    if (result.analyzed) {
+      findings = localized(result.problems);
+      general = localized(result.general);
+    } else {
+      syntax = localized(result.problems);
+    }
+    renderAll();
+    status.textContent = result.error ? result.error
+      : (result.analyzed ? 'Checked' : 'XML to fix before the rules can run') + ' in ' + Math.round(performance.now() - started) + ' ms';
+  }
+
+  async function save() {
+    const files = dirty();
+    if (!files.length || saving) return;
+    saving = true;
+    const contents = files.map(f => f.model.getValue());
+    try {
+      await api.editorSave(id, files.map((f, i) => ({path: f.path, content: contents[i], base: f.base})));
+      files.forEach((f, i) => { f.base = contents[i]; });
+      toast(files.length === 1 ? 'Saved ' + files[0].path : 'Saved ' + files.length + ' files');
+      renderAll();
+      check();
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      saving = false;
+    }
+  }
+
+  leaveGuard = silent => !dirty().length || (!silent && confirm('Discard your unsaved changes?'));
+  leaveView = () => {
+    clearTimeout(timer);
+    editor.dispose();
+    opened.forEach(file => file.model.dispose());
+  };
+
+  const page = h('div', {class: 'editor-page'},
+    h('div', {class: 'editor-head'},
+      h('a', {href: '#/proxy/' + encodeURIComponent(id)}, '← ' + workspace.proxy),
+      status,
+      h('span', {class: 'spacer'}),
+      saveButton),
+    h('div', {class: 'editor-body'}, tree, h('div', {class: 'editor-main'}, tabBar, host)),
+    h('div', {class: 'editor-problems'}, problemsHead, problemsList));
+
+  renderAll();
+  const first = workspace.bundles[0].files.find(f => f.text && f.path.startsWith('proxies/'))
+    || workspace.bundles[0].files.find(f => f.text);
+  if (first) open(root, first.path, workspace.bundles[0].editable);
+  schedule();
+  return page;
 }
 
 // ---------------------------------------------------------------------------------------------------------------

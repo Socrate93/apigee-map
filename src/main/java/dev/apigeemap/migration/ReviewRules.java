@@ -30,7 +30,7 @@ final class ReviewRules {
                 String location = where;
                 for (int n = 2; !locations.add(location); n++) location = where + " (" + n + ")";
                 ctx.manual(remark.category(), remark.severity(), location, remark.message(), remark.action(),
-                        ctx.on(script));
+                        ctx.on(script, remark.line()));
             }
         }
     }

@@ -17,8 +17,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Executors;
+import java.util.regex.Pattern;
 
 /**
  * Local web UI: static pages from the jar plus a JSON API over {@link UiService}.
@@ -33,12 +35,20 @@ public final class UiServer {
             "/assets/app.js", "app.js",
             "/assets/app.css", "app.css");
     private static final Set<String> LOOPBACK_HOSTS = Set.of("127.0.0.1", "localhost");
+    /** The code editor, from its webjar: this version is the one of monaco.version in the pom. */
+    private static final String MONACO_PREFIX = "/assets/monaco/";
+    private static final String MONACO_RESOURCES = "/META-INF/resources/webjars/monaco-editor/0.52.2/min/";
+    private static final Pattern MONACO_PATH = Pattern.compile("[A-Za-z0-9_-]+(?:[./][A-Za-z0-9_-]+)*");
+    private static final Map<String, String> MONACO_TYPES = Map.of("js", "text/javascript", "css", "text/css",
+            "ttf", "font/ttf");
 
     private final UiService service;
+    private final EditorService editor;
     private final HttpServer server;
 
-    private UiServer(UiService service, HttpServer server) {
+    private UiServer(UiService service, EditorService editor, HttpServer server) {
         this.service = service;
+        this.editor = editor;
         this.server = server;
     }
 
@@ -59,7 +69,8 @@ public final class UiServer {
         } catch (BindException e) {
             http = HttpServer.create(new InetSocketAddress(loopback, 0), 0);
         }
-        UiServer ui = new UiServer(new UiService(settingsFile, historyRoot, backendConfig), http);
+        UiService service = new UiService(settingsFile, historyRoot, backendConfig);
+        UiServer ui = new UiServer(service, new EditorService(service, historyRoot), http);
         http.createContext("/", ui::handle);
         http.setExecutor(Executors.newFixedThreadPool(4));
         http.start();
@@ -103,6 +114,10 @@ public final class UiServer {
         String asset = ASSETS.get(path);
         if (asset != null && method.equals("GET")) {
             sendAsset(exchange, asset);
+            return;
+        }
+        if (path.startsWith(MONACO_PREFIX) && method.equals("GET")) {
+            sendMonaco(exchange, path.substring(MONACO_PREFIX.length()));
             return;
         }
         switch (method + " " + path) {
@@ -169,6 +184,14 @@ public final class UiServer {
                     Map.of("diff", service.historyDiff(query.get("id"), query.get("bundle"), query.get("step"))));
             case "POST /api/history/revert" -> json(exchange, 200,
                     service.revertStep(query.get("id"), query.get("bundle"), query.get("step")));
+            case "GET /api/editor" -> json(exchange, 200, editor.workspace(query.get("id")));
+            case "GET /api/editor/file" -> json(exchange, 200,
+                    editor.read(query.get("id"), query.get("bundle"), query.get("path")));
+            case "POST /api/editor/check" -> json(exchange, 200,
+                    editor.check(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
+            case "POST /api/editor/save" -> json(exchange, 200,
+                    Map.of("step", Optional.ofNullable(editor.save(query.get("id"),
+                            (Map<?, ?>) Json.parse(body(exchange)))).map(s -> (Object) s.id()).orElse("")));
             default -> json(exchange, 404, Map.of("error", "Not found: " + method + " " + path));
         }
     }
@@ -220,6 +243,20 @@ public final class UiServer {
         }
     }
 
+    /** A file of the code editor, which the page loads from here rather than from a CDN. */
+    private static void sendMonaco(HttpExchange exchange, String path) throws IOException {
+        String type = MONACO_TYPES.get(path.substring(path.lastIndexOf('.') + 1));
+        InputStream in = type == null || !MONACO_PATH.matcher(path).matches() ? null
+                : UiServer.class.getResourceAsStream(MONACO_RESOURCES + path);
+        if (in == null) {
+            send(exchange, 404, "text/plain", "Missing asset " + path);
+            return;
+        }
+        try (in) {
+            send(exchange, 200, type, in.readAllBytes());
+        }
+    }
+
     private static void download(HttpExchange exchange, UiService.Download download) throws IOException {
         exchange.getResponseHeaders().add("Content-Disposition", "attachment; filename=\"" + download.fileName() + "\"");
         send(exchange, 200, download.contentType(), download.content());
@@ -230,8 +267,11 @@ public final class UiServer {
     }
 
     private static void send(HttpExchange exchange, int status, String type, String body) throws IOException {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set("Content-Type", type + "; charset=utf-8");
+        send(exchange, status, type + "; charset=utf-8", body.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void send(HttpExchange exchange, int status, String type, byte[] bytes) throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", type);
         exchange.getResponseHeaders().set("Cache-Control", "no-store");
         exchange.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
         exchange.sendResponseHeaders(status, bytes.length);

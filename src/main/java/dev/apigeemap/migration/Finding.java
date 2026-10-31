@@ -1,5 +1,6 @@
 package dev.apigeemap.migration;
 
+import dev.apigeemap.analysis.SourceMap;
 import dev.apigeemap.model.Issue;
 
 import java.util.List;
@@ -14,8 +15,16 @@ import java.util.List;
 public record Finding(String rule, Category category, Issue.Severity severity, String bundle, String location,
                       String message, String action, Fix fix, List<Subject> subjects) {
 
-    /** A file of a bundle of the migration: {@code file} is bundle-relative, e.g. {@code policies/JS-Audit.xml}. */
-    public record Subject(String bundle, String file) {
+    /**
+     * A file of a bundle of the migration: {@code file} is bundle-relative, e.g. {@code policies/JS-Audit.xml}.
+     *
+     * @param span where in the file, when the rule knows; null for the file as a whole
+     */
+    public record Subject(String bundle, String file, SourceMap.Span span) {
+
+        public Subject(String bundle, String file) {
+            this(bundle, file, null);
+        }
     }
 
     public enum Category {

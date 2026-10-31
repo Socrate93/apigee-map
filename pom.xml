@@ -16,6 +16,8 @@
         <junit.version>5.10.2</junit.version>
         <rhino.version>1.7.15.1</rhino.version>
         <jgit.version>7.4.0.202509020913-r</jgit.version>
+        <!-- Also in UiServer.MONACO_RESOURCES -->
+        <monaco.version>0.52.2</monaco.version>
     </properties>
 
     <dependencies>
@@ -36,6 +38,12 @@
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-nop</artifactId>
             <version>1.7.36</version>
+        </dependency>
+        <!-- The code editor of the UI, served from the jar -->
+        <dependency>
+            <groupId>org.webjars.npm</groupId>
+            <artifactId>monaco-editor</artifactId>
+            <version>${monaco.version}</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -91,6 +99,13 @@
                                         <exclude>META-INF/*.DSA</exclude>
                                         <exclude>META-INF/*.RSA</exclude>
                                     </excludes>
+                                </filter>
+                                <!-- Only the minified build: the webjar also holds the sources of three others -->
+                                <filter>
+                                    <artifact>org.webjars.npm:monaco-editor</artifact>
+                                    <includes>
+                                        <include>META-INF/resources/webjars/monaco-editor/*/min/vs/**</include>
+                                    </includes>
                                 </filter>
                                 <filter>
                                     <artifact>org.mozilla:rhino</artifact>

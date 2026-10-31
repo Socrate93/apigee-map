@@ -109,7 +109,7 @@ final class DesignRules {
             if (uri == null) {
                 ctx.manual(INFO, location, "Backend URL " + url + " cannot be moved to a TargetServer automatically",
                         "Move the host and port to a TargetServer and keep the variable part in <Path>.",
-                        ctx.onFile(file));
+                        ctx.onFile(file, urlElement));
                 continue;
             }
             boolean https = uri.getScheme().equalsIgnoreCase("https");
@@ -141,7 +141,7 @@ final class DesignRules {
                     ? " Move the SSLInfo settings to the target server definition." : "";
             ctx.fixed(WARN, location, "Hardcoded backend URL " + url,
                     "Replaced by TargetServer " + name + ": create it in each environment with that environment's"
-                            + " backend host (targetservers.json)." + ssl, ctx.onFile(file));
+                            + " backend host (targetservers.json)." + ssl, ctx.onFile(file, urlElement));
         }
     }
 
@@ -476,7 +476,8 @@ final class DesignRules {
             ctx.manual(INFO, script.policy() + " (" + script.label() + ")", "Reads " + names(unset)
                             + ", which no policy of the proxy or its shared flows sets",
                     "Check the names (a typo reads as null) and which policy should set them." + caveat,
-                    ctx.on(script));
+                    script.bundle().equals(ctx.report.name()) ? ctx.on(script, unset.iterator().next())
+                            : ctx.on(script));
         }
     }
 

@@ -1,5 +1,6 @@
 package dev.apigeemap.migration;
 
+import dev.apigeemap.analysis.SourceMap;
 import dev.apigeemap.analysis.Xml;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -14,6 +15,7 @@ import javax.xml.transform.stream.StreamResult;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -51,7 +53,10 @@ final class BundleWorkspace {
     Element root(String file) throws IOException {
         Document document = documents.get(file);
         if (document == null) {
-            document = Xml.parse(dir.resolve(file)).getOwnerDocument();
+            Path path = dir.resolve(file);
+            document = Xml.parse(path).getOwnerDocument();
+            new SourceMap(new String(Files.readAllBytes(path), StandardCharsets.UTF_8))
+                    .mark(document.getDocumentElement());
             documents.put(file, document);
         }
         return document.getDocumentElement();

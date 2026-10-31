@@ -7,6 +7,7 @@ import dev.apigeemap.model.BundleReport;
 import dev.apigeemap.model.Dependency;
 import dev.apigeemap.model.DependencyKind;
 import dev.apigeemap.model.Policy;
+import org.w3c.dom.Element;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -114,7 +115,7 @@ final class PerformanceRules {
             if (!blocking || !reported.add(script.policy())) continue;
             ctx.manual(WARN, script.policy(), "JavaScript calls httpClient and blocks on waitForComplete()",
                     "Use a ServiceCallout, or the callback form of httpClient.send without waitForComplete().",
-                    ctx.on(script));
+                    ctx.on(script, "waitForComplete"));
         }
     }
 
@@ -146,16 +147,17 @@ final class PerformanceRules {
     private static void quotas(MigrationContext ctx) throws IOException {
         for (Policy policy : ctx.policies("Quota")) {
             if (!policy.attached()) continue;
-            String distributed = Xml.text(ctx.xml(policy), "Distributed");
-            if (!"true".equalsIgnoreCase(distributed)) {
+            Element distributed = Xml.path(ctx.xml(policy), "Distributed");
+            if (!"true".equalsIgnoreCase(Xml.text(distributed))) {
                 ctx.manual(WARN, policy.name(), "Quota is not distributed: each runtime instance counts on its own",
                         "Set <Distributed>true</Distributed>, or the effective limit grows with the number of"
-                                + " runtime pods.", ctx.on(policy));
+                                + " runtime pods.", ctx.on(policy, distributed != null ? distributed : ctx.xml(policy)));
             }
-            if ("true".equalsIgnoreCase(Xml.text(ctx.xml(policy), "Synchronous"))) {
+            Element synchronous = Xml.path(ctx.xml(policy), "Synchronous");
+            if ("true".equalsIgnoreCase(Xml.text(synchronous))) {
                 ctx.manual(WARN, policy.name(), "Quota updates its counter synchronously on every call",
                         "Remove <Synchronous>true</Synchronous> unless the limit must be exact: the default"
-                                + " asynchronous update avoids the extra latency.", ctx.on(policy));
+                                + " asynchronous update avoids the extra latency.", ctx.on(policy, synchronous));
             }
         }
     }

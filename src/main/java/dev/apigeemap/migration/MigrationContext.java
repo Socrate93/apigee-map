@@ -1,5 +1,6 @@
 package dev.apigeemap.migration;
 
+import dev.apigeemap.analysis.SourceMap;
 import dev.apigeemap.analysis.Xml;
 import dev.apigeemap.migration.Finding.Subject;
 import dev.apigeemap.model.BundleReport;
@@ -22,6 +23,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 
 /** What a rule sees for one bundle: its analysis report, its workspace, and the shared flows of the migration. */
 final class MigrationContext {
@@ -157,6 +159,46 @@ final class MigrationContext {
     /** Policies of this bundle. */
     List<Subject> on(Policy... policies) {
         return Arrays.stream(policies).map(p -> new Subject(report.name(), p.file())).toList();
+    }
+
+    /** A policy of this bundle, at one of its elements. */
+    List<Subject> on(Policy policy, Element element) {
+        return onFile(policy.file(), element);
+    }
+
+    /** A file of this bundle, at one of its elements. */
+    List<Subject> onFile(String file, Element element) {
+        return List.of(new Subject(report.name(), file, SourceMap.spanOf(element)));
+    }
+
+    /** The same files, at one of their elements: for code shared by targets and callouts, each given one file. */
+    static List<Subject> at(List<Subject> subjects, Element element) {
+        return subjects.stream().map(s -> new Subject(s.bundle(), s.file(), SourceMap.spanOf(element))).toList();
+    }
+
+    /** A file of this bundle, at the first occurrence of a text. */
+    List<Subject> onFile(String file, String text) throws IOException {
+        return List.of(new Subject(report.name(), file, new SourceMap(workspace.read(file)).find(text)));
+    }
+
+    /** A script and the policy that runs it, at the first occurrence of a text of the script. */
+    List<Subject> on(Scripts.Script script, String text) throws IOException {
+        return at(script, map -> map.find(text));
+    }
+
+    /** A script and the policy that runs it, at a line of a script file. */
+    List<Subject> on(Scripts.Script script, int line) throws IOException {
+        return at(script, map -> script.file().equals("inline") ? null : map.line(line));
+    }
+
+    private List<Subject> at(Scripts.Script script, Function<SourceMap, SourceMap.Span> where) throws IOException {
+        List<Subject> subjects = new ArrayList<>();
+        for (Subject subject : on(script)) {
+            boolean holdsIt = script.file().equals("inline") || subject.file().equals(script.file());
+            subjects.add(!holdsIt ? subject : new Subject(subject.bundle(), subject.file(),
+                    where.apply(new SourceMap(workspace.read(subject.file())))));
+        }
+        return subjects;
     }
 
     /** Files of this bundle (endpoints, resources), bundle-relative. */
