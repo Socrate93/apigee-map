@@ -200,6 +200,57 @@ class EditorTest {
     }
 
     @Test
+    void offersThePreFlowOfAnEndpointThatHasNone() throws Exception {
+        Map<?, ?> outline = (Map<?, ?>) check(List.of()).get("outline");
+        Map<?, ?> lane = ((List<?>) outline.get("lanes")).stream().map(l -> (Map<?, ?>) l)
+                .filter(l -> l.get("title").equals("TargetEndpoint legacy request")).findFirst().orElseThrow();
+        Map<?, ?> segment = (Map<?, ?>) ((List<?>) lane.get("segments")).get(0);
+
+        assertEquals("Request", segment.get("element"));
+        assertEquals("TargetEndpoint", segment.get("parent"));
+        assertEquals(1, ((Number) ((Map<?, ?>) segment.get("span")).get("line")).intValue());
+    }
+
+    @Test
+    void checksAndSavesTheDeletionOfAFile() throws Exception {
+        Path file = proxies.resolve("orders-api/apiproxy/policies/KVM-Legacy-Unused.xml");
+        String base = Files.readString(file);
+        Map<String, Object> deletion = Map.of("path", "policies/KVM-Legacy-Unused.xml", "deleted", true);
+
+        assertTrue(problems(check(List.of(deletion))).stream()
+                .noneMatch(p -> "policies/KVM-Legacy-Unused.xml".equals(((Map<?, ?>) p).get("file"))));
+        assertTrue(Files.exists(file));
+
+        String body = Json.write(Map.of("files", List.of(Map.of("path", "policies/KVM-Legacy-Unused.xml", "deleted", true, "base", base))));
+        assertEquals(200, post("/api/editor/save?id=" + ID, body).statusCode());
+        assertFalse(Files.exists(file));
+    }
+
+    @Test
+    void simulatesUnsavedText() throws Exception {
+        Path file = proxies.resolve("orders-api/apiproxy/proxies/default.xml");
+        String edited = Files.readString(file).replace("/v1/orders", "/v2/orders");
+        String body = Json.write(Map.of("verb", "GET", "path", "/v2/orders/42", "headers", Map.of(), "status", "200",
+                "variables", Map.of("private.backend.password", "x"), "failing", List.of(),
+                "buffers", List.of(Map.of("path", "proxies/default.xml", "content", edited))));
+
+        HttpResponse<String> response = post("/api/editor/simulate?id=" + ID, body);
+
+        assertEquals(200, response.statusCode(), response.body());
+        Map<?, ?> result = (Map<?, ?>) Json.parse(response.body());
+        assertEquals(null, result.get("fault"), response.body());
+        assertEquals(List.of(), result.get("warnings"), response.body());
+        assertTrue(((List<?>) result.get("entries")).stream().map(e -> (Map<?, ?>) e)
+                .anyMatch(e -> e.get("name").equals("getOrder") && e.get("status").equals("RAN")));
+    }
+
+    @Test
+    void refusesToSimulateMalformedXml() throws Exception {
+        String body = Json.write(Map.of("buffers", List.of(Map.of("path", "proxies/default.xml", "content", "<ProxyEndpoint>"))));
+        assertEquals(409, post("/api/editor/simulate?id=" + ID, body).statusCode());
+    }
+
+    @Test
     void catalogPoliciesAreWellFormedAndRaiseNoError() throws Exception {
         for (PolicyCatalog.Entry entry : PolicyCatalog.ENTRIES) {
             String name = entry.prefix() + "-Check";

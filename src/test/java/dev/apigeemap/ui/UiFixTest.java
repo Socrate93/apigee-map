@@ -53,6 +53,7 @@ class UiFixTest {
     private final List<Map<?, ?>> documented = new CopyOnWriteArrayList<>();
     private final List<Map<?, ?>> ported = new CopyOnWriteArrayList<>();
     private final List<Map<?, ?>> planned = new CopyOnWriteArrayList<>();
+    private final List<Map<?, ?>> composed = new CopyOnWriteArrayList<>();
     private HttpServer backend;
     private UiServer server;
     private Path bundle;
@@ -109,6 +110,42 @@ class UiFixTest {
         assertEquals(200, post("/api/history/revert?id=factorization-api&bundle=factorization-api&step=" + step)
                 .statusCode());
         assertEquals(original, Files.readString(bundle.resolve(COPY)));
+    }
+
+    @Test
+    void composesFromUnsavedTextAndChecksTheAnswerWithoutWritingIt() throws Exception {
+        Path endpoint = bundle.resolve("proxies/default.xml");
+        String saved = Files.readString(endpoint);
+        String unsaved = saved + "<!-- unsaved -->\n";
+        Map<String, Object> request = Map.of("request", "Add a limit",
+                "selection", Map.of("path", "proxies/default.xml", "text", "<Step/>"),
+                "buffers", List.of(Map.of("path", "proxies/default.xml", "content", unsaved)));
+
+        HttpResponse<String> response = send("/api/editor/assist?id=factorization-api", "POST", Json.write(request));
+
+        assertEquals(200, response.statusCode(), response.body());
+        Map<?, ?> answer = (Map<?, ?>) Json.parse(response.body());
+        assertEquals("Adds a limit", answer.get("summary"));
+        Map<?, ?> review = (Map<?, ?>) answer.get("review");
+        assertEquals(false, review.get("analyzed"), "the edit is malformed XML, and the check says so");
+        assertEquals("policies/Q-New.xml", ((Map<?, ?>) ((List<?>) review.get("added")).get(0)).get("file"));
+
+        Map<?, ?> sent = composed.get(0);
+        assertEquals("Add a limit", sent.get("request"));
+        assertTrue(((String) sent.get("flow")).contains("ProxyEndpoint"), sent.toString());
+        assertTrue(((List<?>) sent.get("files")).stream().map(f -> (Map<?, ?>) f)
+                .anyMatch(f -> f.get("path").equals("proxies/default.xml") && unsaved.equals(f.get("content"))));
+        assertEquals(saved, Files.readString(endpoint));
+        assertFalse(Files.exists(bundle.resolve("policies/Q-New.xml")));
+    }
+
+    @Test
+    void anUnreachableBackendAnswersTheUsualMessage() throws Exception {
+        backend.stop(0);
+        HttpResponse<String> response = send("/api/editor/assist?id=factorization-api", "POST",
+                Json.write(Map.of("request", "Explain")));
+
+        assertEquals(BackendClient.UNAVAILABLE, ((Map<?, ?>) Json.parse(response.body())).get("error"));
     }
 
     @Test
@@ -470,6 +507,14 @@ class UiFixTest {
                             Map.of("bundle", "factorization-api", "file", "proxies/default.xml", "line", 1,
                                     "category", "DESIGN", "severity", "WARN", "title", "Not a script",
                                     "message", "Ignored.", "action", ""))));
+                    seal(exchange, opened, reply);
+                    return;
+                }
+                if (request.get("type").equals("compose")) {
+                    composed.add((Map<?, ?>) request.get("body"));
+                    reply.put("body", Map.of("summary", "Adds a limit", "warnings", List.of(), "edits", List.of(
+                            Map.of("bundle", "factorization-api", "path", "policies/Q-New.xml", "action", "create",
+                                    "content", "<Quota name=\"Q-New\">", "reason", "New policy"))));
                     seal(exchange, opened, reply);
                     return;
                 }

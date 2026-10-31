@@ -37,10 +37,11 @@ record EditorOutline(List<Lane> lanes, List<PolicyEntry> policies, List<Variable
      * A list of steps: a PreFlow phase, a conditional Flow, a FaultRule, or a RouteRule, which has none.
      *
      * @param element the tag holding the steps, where a step can be added; null for a RouteRule
-     * @param span    where {@code element} starts in {@code file}
+     * @param span    where {@code element} starts in {@code file}, or {@code parent}
+     * @param parent  the tag to create {@code element} in when the endpoint does not have it yet; else null
      */
     record Segment(String label, String condition, String file, String element, SourceMap.Span span,
-                   List<Step> steps) {
+                   List<Step> steps, String parent) {
     }
 
     record Lane(String title, List<Segment> segments) {
@@ -55,6 +56,20 @@ record EditorOutline(List<Lane> lanes, List<PolicyEntry> policies, List<Variable
     }
 
     record Variable(String name, List<Use> setBy, List<Use> readBy) {
+    }
+
+    /** The flow as lines of text: each list of steps, in the order they run. */
+    String text() {
+        StringBuilder out = new StringBuilder();
+        for (Lane lane : lanes) {
+            for (Segment segment : lane.segments()) {
+                out.append(lane.title()).append(" > ").append(segment.label());
+                if (segment.condition() != null) out.append(" [").append(segment.condition()).append(']');
+                out.append(": ");
+                out.append(String.join(", ", segment.steps().stream().map(Step::policy).toList())).append('\n');
+            }
+        }
+        return out.toString();
     }
 
     static EditorOutline of(BundleReport report) throws IOException {
@@ -182,7 +197,13 @@ record EditorOutline(List<Lane> lanes, List<PolicyEntry> policies, List<Variable
 
         private List<Segment> phase(Endpoint endpoint, String phase) {
             List<Segment> segments = new ArrayList<>();
-            segment(segments, endpoint, Xml.path(endpoint.root(), "PreFlow", phase), "PreFlow", null,
+            Element preFlow = Xml.path(endpoint.root(), "PreFlow");
+            if (Xml.path(preFlow, phase) == null) {
+                Element parent = preFlow != null ? preFlow : endpoint.root();
+                segments.add(new Segment("PreFlow", null, endpoint.file(), phase, SourceMap.spanOf(parent), List.of(),
+                        parent.getTagName()));
+            }
+            segment(segments, endpoint, Xml.path(preFlow, phase), "PreFlow", null,
                     endpoint.name() + " › PreFlow › " + phase);
             for (Element flow : Xml.children(Xml.path(endpoint.root(), "Flows"), "Flow")) {
                 segment(segments, endpoint, Xml.path(flow, phase), Xml.nameOf(flow), Xml.text(flow, "Condition"),
@@ -198,7 +219,7 @@ record EditorOutline(List<Lane> lanes, List<PolicyEntry> policies, List<Variable
             for (Element rule : Xml.children(proxy.root(), "RouteRule")) {
                 String target = Xml.text(rule, "TargetEndpoint");
                 segments.add(new Segment(Xml.nameOf(rule) + (target == null ? " (no target)" : " → " + target),
-                        Xml.text(rule, "Condition"), proxy.file(), null, SourceMap.spanOf(rule), List.of()));
+                        Xml.text(rule, "Condition"), proxy.file(), null, SourceMap.spanOf(rule), List.of(), null));
             }
             return segments;
         }
@@ -228,7 +249,7 @@ record EditorOutline(List<Lane> lanes, List<PolicyEntry> policies, List<Variable
                         unset.getOrDefault(key(location, name), List.of())));
             }
             segments.add(new Segment(label, condition, endpoint.file(), holder.getTagName(), SourceMap.spanOf(holder),
-                    steps));
+                    steps, null));
         }
     }
 }

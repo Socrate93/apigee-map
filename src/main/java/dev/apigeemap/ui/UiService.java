@@ -110,7 +110,7 @@ final class UiService {
     private record ServiceFile(String path, String content) {
     }
 
-    private record ProposedEdit(String bundle, String path, String action, String reason, String before,
+    record ProposedEdit(String bundle, String path, String action, String reason, String before,
                                 String after) {
     }
 
@@ -686,20 +686,7 @@ final class UiService {
         // a failure answers 200 like a fix, with the same message whatever the cause
         if (!(answer instanceof Map<?, ?> reply)) return new LinkedHashMap<>(Map.of("error", BackendClient.UNAVAILABLE));
 
-        List<ProposedEdit> edits = new ArrayList<>();
-        if (reply.get("edits") instanceof List<?> list) {
-            for (Object item : list) {
-                if (!(item instanceof Map<?, ?> edit)) continue;
-                String bundle = String.valueOf(edit.get("bundle"));
-                String path = String.valueOf(edit.get("path"));
-                String before = files.stream()
-                        .filter(f -> f.bundle().equals(bundle) && f.path().equals(path))
-                        .map(FixContext.SourceFile::content).findFirst().orElse(null);
-                edits.add(new ProposedEdit(bundle, path, String.valueOf(edit.get("action")),
-                        String.valueOf(edit.get("reason")), before,
-                        edit.get("content") instanceof String content ? content : null));
-            }
-        }
+        List<ProposedEdit> edits = edits(reply, files);
         String summary = String.valueOf(reply.get("summary"));
         Service service = null;
         if (operation.equals("port") && reply.get("service") instanceof Map<?, ?> proposed) {
@@ -721,6 +708,47 @@ final class UiService {
             result.put("approach", reply.get("approach"));
             result.put("service", service == null ? null : serviceView(service));
         }
+        return result;
+    }
+
+    private static List<ProposedEdit> edits(Map<?, ?> reply, List<FixContext.SourceFile> files) {
+        List<ProposedEdit> edits = new ArrayList<>();
+        if (reply.get("edits") instanceof List<?> list) {
+            for (Object item : list) {
+                if (!(item instanceof Map<?, ?> edit)) continue;
+                String bundle = String.valueOf(edit.get("bundle"));
+                String path = String.valueOf(edit.get("path"));
+                String before = files.stream()
+                        .filter(f -> f.bundle().equals(bundle) && f.path().equals(path))
+                        .map(FixContext.SourceFile::content).findFirst().orElse(null);
+                edits.add(new ProposedEdit(bundle, path, String.valueOf(edit.get("action")),
+                        String.valueOf(edit.get("reason")), before,
+                        edit.get("content") instanceof String content ? content : null));
+            }
+        }
+        return edits;
+    }
+
+    /**
+     * What the backend answers an editor request, kept nowhere: the page applies the edits to its buffers. Answers
+     * {@code {summary, warnings, edits}}, or {@code {error}} with the same message whatever the cause.
+     *
+     * @param files the files sent, to show each edit against what it replaces
+     */
+    Map<String, Object> ask(String operation, Map<String, Object> body, List<FixContext.SourceFile> files) {
+        Object answer;
+        try {
+            answer = new BackendClient(BackendConfig.load(backendConfig, token.get().orElse(null)))
+                    .call(operation, body);
+        } catch (IOException | RuntimeException e) {
+            BackendClient.report(e, System.err);
+            answer = null;
+        }
+        if (!(answer instanceof Map<?, ?> reply)) return new LinkedHashMap<>(Map.of("error", BackendClient.UNAVAILABLE));
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("summary", String.valueOf(reply.get("summary")));
+        result.put("warnings", reply.get("warnings") instanceof List<?> warnings ? warnings : List.of());
+        result.put("edits", edits(reply, files));
         return result;
     }
 

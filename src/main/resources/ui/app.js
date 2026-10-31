@@ -89,6 +89,8 @@ const api = {
     + '&bundle=' + encodeURIComponent(bundle) + '&path=' + encodeURIComponent(path)),
   editorCheck: (id, buffers) => request('POST', '/api/editor/check?id=' + encodeURIComponent(id), {buffers}),
   editorSave: (id, files) => request('POST', '/api/editor/save?id=' + encodeURIComponent(id), {files}),
+  editorAssist: (id, asked) => request('POST', '/api/editor/assist?id=' + encodeURIComponent(id), asked),
+  editorSimulate: (id, call) => request('POST', '/api/editor/simulate?id=' + encodeURIComponent(id), call),
   editorRename: (id, change) => request('POST', '/api/editor/rename?id=' + encodeURIComponent(id), change),
 };
 
@@ -1439,11 +1441,16 @@ async function editorView(id, isCurrent) {
   let checks = 0;
   let saving = false;
   let outline = null;
+  let panel = 'problems';
+  /** What the last simulated call did at each step of the proxy, by policy, until the text changes. */
+  let simulated = new Map();
   const disposables = [];
 
   const status = h('span', {class: 'meta'});
   const saveButton = h('button', {type: 'button', class: 'primary', onclick: save}, 'Save');
   const newPolicyButton = h('button', {type: 'button', onclick: () => policyDialog(null)}, 'New policy');
+  let pageElement = null;
+  const composeButton = h('button', {type: 'button', onclick: () => composeDialog()}, 'Compose');
   const renameButton = h('button', {type: 'button', onclick: () => renameDialog(activePolicy()?.name)}, 'Rename policy');
   const rail = h('aside', {class: 'editor-rail', 'aria-label': 'Flow'});
   const tree = h('nav', {class: 'editor-tree', 'aria-label': 'Files'});
@@ -1451,6 +1458,8 @@ async function editorView(id, isCurrent) {
   const host = h('div', {class: 'editor-host'});
   const problemsHead = h('div', {class: 'editor-problems-head'});
   const problemsList = h('div', {class: 'editor-problems-list'});
+  const problemsPanel = h('div', {class: 'editor-problems'}, problemsHead, problemsList);
+  const simulatePanel = simulationPanel();
 
   const editor = monaco.editor.create(host, {
     automaticLayout: true, minimap: {enabled: false}, fontSize: 13, scrollBeyondLastLine: false, model: null,
@@ -1467,13 +1476,14 @@ async function editorView(id, isCurrent) {
     if ((event.event.ctrlKey || event.event.metaKey) && event.target.position) goToDefinition(editor.getModel(), event.target.position);
   }));
 
-  const dirty = () => [...opened.values()].filter(f => f.model.getValue() !== f.base);
+  const dirty = () => [...opened.values()].filter(f => f.deleted ? f.base !== null : f.model.getValue() !== f.base);
+  const buffers = () => dirty().map(f => f.deleted ? {path: f.path, deleted: true} : {path: f.path, content: f.model.getValue()});
   const problems = () => [...syntax, ...findings];
   const label = p => p.bundle === root ? p.file : p.bundle + '/' + p.file;
 
   /** A proxy opened broken is known by its id until it can be analyzed: its problems are about the same bundle. */
   function localized(list) {
-    return list.map(p => ({...p, bundle: shared.has(p.bundle) ? p.bundle : root}));
+    return list.map(p => ({...p, findingBundle: p.bundle, bundle: shared.has(p.bundle) ? p.bundle : root}));
   }
 
   function renderTree() {
@@ -1494,8 +1504,9 @@ async function editorView(id, isCurrent) {
             const key = fileKey(bundle.name, file.path);
             const here = all.filter(p => p.bundle === bundle.name && p.file === file.path);
             const changed = opened.has(key) && opened.get(key).model.getValue() !== opened.get(key).base;
+            const deleted = opened.get(key)?.deleted;
             const name = file.path.slice(file.path.lastIndexOf('/') + 1);
-            return h('button', {type: 'button', class: 'editor-file' + (key === active ? ' on' : ''), disabled: !file.text,
+            return h('button', {type: 'button', class: 'editor-file' + (key === active ? ' on' : '') + (deleted ? ' deleted' : ''), disabled: !file.text || deleted,
                 title: file.text ? file.path : 'Too large, or not UTF-8 text',
                 onclick: () => open(bundle.name, file.path, bundle.editable)},
               h('span', {class: 'name'}, (changed ? '● ' : '') + name),
@@ -1520,19 +1531,21 @@ async function editorView(id, isCurrent) {
     const here = all.filter(p => file && p.bundle === file.bundle && p.file === file.path);
     const shown = scope === 'file' ? here : [...all, ...general];
     problemsHead.replaceChildren(
-      h('strong', {}, 'Problems'),
+      panelTabs(),
       chips([['all', 'All ' + (all.length + general.length)], ['file', 'This file ' + here.length]], scope, value => {
         scope = value || 'all';
         renderProblems();
       }));
     problemsList.replaceChildren(...(shown.length ? shown.map(p => {
       const place = p.file ? label(p) + (p.span ? ':' + p.span.line : '') : 'Proxy';
-      return h('button', {type: 'button', class: 'editor-problem', disabled: !p.file,
-          onclick: () => p.file && open(p.bundle, p.file, p.bundle === root, p.span)},
-        severity(p.severity),
-        p.rule ? h('span', {class: 'mono'}, p.rule) : null,
-        h('span', {class: 'text', title: p.action || ''}, p.message),
-        h('span', {class: 'mono place'}, place));
+      return h('div', {class: 'editor-problem-row'},
+        h('button', {type: 'button', class: 'editor-problem', disabled: !p.file,
+            onclick: () => p.file && open(p.bundle, p.file, p.bundle === root, p.span)},
+          severity(p.severity),
+          p.rule ? h('span', {class: 'mono'}, p.rule) : null,
+          h('span', {class: 'text', title: p.action || ''}, p.message),
+          h('span', {class: 'mono place'}, place)),
+        p.rule ? h('button', {type: 'button', class: 'link', onclick: () => fixProblem(p)}, 'Fix') : null);
     }) : [h('p', {class: 'meta'}, 'Nothing to report.')]));
   }
 
@@ -1545,6 +1558,89 @@ async function editorView(id, isCurrent) {
         .map(p => ({severity: severities[p.severity], source: p.rule || 'XML', message: p.message + (p.action ? '\n\n' + p.action : ''),
           startLineNumber: p.span.line, startColumn: p.span.column, endLineNumber: p.span.endLine, endColumn: p.span.endColumn})));
     }
+  }
+
+  function panelTabs() {
+    return h('div', {class: 'editor-panel-tabs', role: 'tablist'}, [['problems', 'Problems'], ['simulate', 'Simulate']].map(([value, title]) =>
+      h('button', {type: 'button', role: 'tab', class: 'link' + (panel === value ? ' on' : ''), 'aria-selected': String(panel === value), onclick: () => {
+        panel = value;
+        problemsPanel.hidden = value !== 'problems';
+        simulatePanel.hidden = value !== 'simulate';
+        pageElement?.classList.toggle('simulating', value === 'simulate');
+        renderProblems();
+        simulatePanel.querySelector('.editor-panel-tabs')?.replaceWith(panelTabs());
+      }}, title)));
+  }
+
+  /** "name: value" or "name=value" lines as an object. */
+  function pairs(text, separator) {
+    const values = {};
+    for (const line of text.split('\n')) {
+      const at = line.indexOf(separator);
+      if (at > 0) values[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+    }
+    return values;
+  }
+
+  function simulationPanel() {
+    const field = (label, control) => h('label', {}, label, control);
+    const verb = h('select', {'aria-label': 'Verb'}, ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'].map(v => h('option', {}, v)));
+    const path = h('input', {type: 'text', 'aria-label': 'Path', value: '/', spellcheck: 'false'});
+    const headers = h('textarea', {rows: 3, placeholder: 'x-api-key: abc', spellcheck: 'false'});
+    const body = h('textarea', {rows: 3, spellcheck: 'false'});
+    const status = h('input', {type: 'number', min: 100, max: 599, value: '200'});
+    const targetBody = h('textarea', {rows: 3, spellcheck: 'false'});
+    const variables = h('textarea', {rows: 3, placeholder: 'config.backend.timeout=3000', spellcheck: 'false'});
+    const failing = h('input', {type: 'text', placeholder: 'Verify-API-Key, Q-Partner', spellcheck: 'false'});
+    const result = h('div', {class: 'editor-trace'}, h('p', {class: 'meta'}, 'Plays a call through the text in the editor, without deploying it. The target answers what you set here.'));
+    const run = h('button', {type: 'button', class: 'primary', onclick: async () => {
+      run.disabled = true;
+      try {
+        const trace = await api.editorSimulate(id, {buffers: buffers(), verb: verb.value, path: path.value, headers: pairs(headers.value, ':'),
+          body: body.value, status: status.value, targetBody: targetBody.value, variables: pairs(variables.value, '='),
+          failing: failing.value.split(',').map(s => s.trim()).filter(Boolean)});
+        simulated = new Map();
+        for (const entry of trace.entries) {
+          if (entry.file && entry.bundle === root) simulated.set(entry.name, entry.status);
+        }
+        renderRail();
+        renderTrace(trace);
+      } catch (error) {
+        result.replaceChildren(errorBox(error));
+      } finally {
+        run.disabled = false;
+      }
+    }}, 'Run');
+
+    function renderTrace(trace) {
+      const response = trace.response;
+      result.replaceChildren(h('div', {},
+        h('div', {class: 'editor-trace-head'},
+          h('strong', {}, response.status + (response.reason ? ' ' + response.reason : '')),
+          trace.fault ? h('span', {class: 'badge bad'}, trace.fault) : null,
+          h('span', {class: 'mono meta'}, response.body || '(empty body)')),
+        trace.warnings.map(w => h('p', {class: 'meta'}, w)),
+        trace.entries.map(entry => h('details', {class: 'editor-trace-entry sim-' + entry.status.toLowerCase()},
+          h('summary', {},
+            h('span', {class: 'badge'}, entry.status.replace('_', ' ').toLowerCase()),
+            h('span', {class: 'mono'}, entry.name),
+            entry.changes.length ? h('span', {class: 'badge'}, entry.changes.length + ' changed') : null,
+            h('span', {class: 'meta'}, entry.location)),
+          entry.note ? h('p', {class: 'meta'}, entry.note) : null,
+          entry.condition ? h('p', {class: 'mono meta'}, 'If ' + entry.condition) : null,
+          entry.file ? h('button', {type: 'button', class: 'link', onclick: () => open(entry.bundle, entry.file, entry.bundle === root)}, 'Open ' + entry.file) : null,
+          entry.changes.map(change => h('div', {class: 'mono'}, change.name + ': ' + (change.before ?? '(none)') + ' → ' + (change.after ?? '(removed)')))))));
+    }
+
+    const form = h('div', {class: 'editor-sim-form'},
+      h('div', {class: 'editor-sim-line'}, verb, path, run),
+      field('Request headers', headers), field('Request body', body),
+      field('Target status', status), field('Target body', targetBody),
+      field('Variables set from outside', variables), field('Policies to fail', failing));
+    const panelElement = h('div', {class: 'editor-simulate', hidden: true},
+      h('div', {class: 'editor-problems-head'}, h('div', {class: 'editor-panel-tabs'})),
+      h('div', {class: 'editor-sim-body'}, form, result));
+    return panelElement;
   }
 
   function renderRail() {
@@ -1568,7 +1664,8 @@ async function editorView(id, isCurrent) {
           const notes = step.unset.map(u => u.name + ': ' + u.why);
           if (!step.file) notes.push('No policy has this name');
           if (step.condition) notes.unshift('If ' + step.condition);
-          return h('button', {type: 'button', class: 'editor-step' + (step.policy === current?.name ? ' on' : '') + (step.enabled ? '' : ' off'),
+          const ran = simulated.get(step.policy);
+          return h('button', {type: 'button', class: 'editor-step' + (step.policy === current?.name ? ' on' : '') + (step.enabled ? '' : ' off') + (ran ? ' sim-' + ran.toLowerCase() : ''),
               title: notes.join('\n'), onclick: () => step.file ? open(root, step.file, true) : open(root, segment.file, true, step.span)},
             h('span', {class: 'name'}, step.policy),
             step.condition ? h('span', {class: 'badge'}, 'if') : null,
@@ -1735,6 +1832,7 @@ async function editorView(id, isCurrent) {
     const model = monaco.editor.createModel(content, language);
     opened.set(key, {bundle, path, editable, base, model});
     model.onDidChangeContent(() => {
+      simulated = new Map();
       renderTree();
       renderTabs();
       saveButton.disabled = !dirty().length;
@@ -1753,7 +1851,7 @@ async function editorView(id, isCurrent) {
     const {model} = opened.get(fileKey(root, segment.file));
     const start = model.getOffsetAt({lineNumber: segment.span.line, column: segment.span.column});
     const text = model.getValue();
-    const tag = '<' + segment.element;
+    const tag = '<' + (segment.parent || segment.element);
     if (!text.startsWith(tag, start)) return false;
     const close = text.indexOf('>', start);
     const line = model.getLineContent(segment.span.line);
@@ -1761,6 +1859,16 @@ async function editorView(id, isCurrent) {
     const step = indent + '    <Step><Name>' + name + '</Name></Step>\n';
     const edit = (from, to, inserted) => model.pushEditOperations([], [{
       range: monaco.Range.fromPositions(model.getPositionAt(from), model.getPositionAt(to)), text: inserted}], () => null);
+    if (segment.parent) {
+      const phase = (pad, phaseName) => phaseName === segment.element
+        ? pad + '<' + phaseName + '>\n' + pad + '    <Step><Name>' + name + '</Name></Step>\n' + pad + '</' + phaseName + '>\n'
+        : pad + '<' + phaseName + '/>\n';
+      const inner = indent + '    ';
+      const block = segment.parent === 'PreFlow' ? phase(inner, segment.element)
+        : inner + '<PreFlow name="PreFlow">\n' + phase(inner + '    ', 'Request') + phase(inner + '    ', 'Response') + inner + '</PreFlow>\n';
+      edit(close + 1, close + 1, '\n' + block.trimEnd());
+      return true;
+    }
     if (text[close - 1] === '/') {
       const opening = text.slice(start, close - 1).trimEnd();
       edit(start, close + 1, opening + '>\n' + step + indent + '</' + segment.element + '>');
@@ -1773,6 +1881,150 @@ async function editorView(id, isCurrent) {
     if (ownLine) edit(lineStart, lineStart, step);
     else edit(end, end, '\n' + step + indent);
     return true;
+  }
+
+  /** Takes a file out of the page, once it is gone. */
+  function forget(file) {
+    const key = fileKey(file.bundle, file.path);
+    if (tabs.includes(key)) closeTab(key);
+    opened.delete(key);
+    file.model.dispose();
+    workspace.bundles[0].files = workspace.bundles[0].files.filter(f => f.path !== file.path);
+  }
+
+  /** Puts the edits of an answer in the buffers: nothing is written before Save. */
+  async function applyEdits(edits) {
+    for (const edit of edits) {
+      const key = fileKey(root, edit.path);
+      if (edit.action === 'create') {
+        addBuffer(root, edit.path, true, edit.after, null);
+        listFile(edit.path);
+        continue;
+      }
+      await open(root, edit.path, true);
+      const file = opened.get(key);
+      if (!file) continue;
+      if (edit.action === 'delete') {
+        if (file.base === null) {
+          forget(file);
+        } else {
+          file.deleted = true;
+          closeTab(key);
+        }
+      } else {
+        file.model.pushEditOperations([], [{range: file.model.getFullModelRange(), text: edit.after}], () => null);
+      }
+    }
+    const shown = edits.find(e => e.action !== 'delete');
+    if (shown) await open(root, shown.path, true);
+    renderAll();
+    schedule();
+  }
+
+  function assistDialog(title, request) {
+    const body = h('div', {class: 'editor-assist'}, h('p', {class: 'meta'}, 'Working on it. This can take a few minutes.'));
+    const apply = h('button', {type: 'button', class: 'primary', hidden: true}, 'Apply to the editor');
+    const dialog = h('dialog', {class: 'wide'}, h('h2', {}, title), body,
+      h('div', {class: 'actions'}, h('button', {type: 'button', onclick: () => dialog.close()}, 'Close'), apply));
+    let diff = null;
+    dialog.addEventListener('close', () => {
+      const model = diff?.getModel();
+      diff?.dispose();
+      model?.original.dispose();
+      model?.modified.dispose();
+      dialog.remove();
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+
+    function show(edit, tabsBar) {
+      [...tabsBar.children].forEach(b => b.classList.toggle('on', b.dataset.path === edit.path));
+      const old = diff.getModel();
+      const language = LANGUAGES[edit.path.slice(edit.path.lastIndexOf('.') + 1).toLowerCase()] || 'plaintext';
+      diff.setModel({original: monaco.editor.createModel(edit.before || '', language), modified: monaco.editor.createModel(edit.after || '', language)});
+      old?.original.dispose();
+      old?.modified.dispose();
+    }
+
+    api.editorAssist(id, {buffers: buffers(), ...request}).then(result => {
+      if (!dialog.open) return;
+      if (result.error) {
+        body.replaceChildren(errorBox({message: result.error}));
+        return;
+      }
+      const own = result.edits.filter(e => e.bundle === root);
+      const others = result.edits.filter(e => e.bundle !== root);
+      const review = result.review;
+      body.replaceChildren(h('div', {},
+        h('p', {class: 'editor-answer'}, result.summary),
+        result.warnings.length ? h('ul', {}, result.warnings.map(w => h('li', {}, w))) : null,
+        others.length ? h('p', {class: 'meta'}, 'Left out, shared flows are read-only here: ' + others.map(e => e.bundle + '/' + e.path).join(', ')) : null,
+        own.length && !review.analyzed ? errorBox({message: 'This change leaves XML to fix: ' + review.added.map(p => p.file + ': ' + p.message).join('; ')}) : null,
+        own.length && review.analyzed ? h('p', {class: 'meta'}, 'Checked: ' + review.resolved + ' problem(s) resolved, ' + review.added.length + ' new.') : null,
+        own.length && review.added.length && review.analyzed ? h('ul', {}, review.added.map(p => h('li', {}, severity(p.severity), ' ', p.rule, ' ', p.message))) : null));
+      if (!own.length) return;
+      const bar = h('div', {class: 'editor-tabs'}, own.map(edit => h('button', {type: 'button', 'data-path': edit.path,
+        class: 'editor-assist-file', title: edit.reason, onclick: () => show(edit, bar)}, edit.action + ' ' + edit.path)));
+      const host = h('div', {class: 'editor-diff'});
+      body.append(bar, host);
+      diff = monaco.editor.createDiffEditor(host, {automaticLayout: true, readOnly: true, minimap: {enabled: false}, fontSize: 13,
+        renderSideBySide: true, theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'vs-dark' : 'vs'});
+      show(own[0], bar);
+      apply.hidden = false;
+      apply.addEventListener('click', async () => {
+        const changed = own.find(e => {
+          const file = opened.get(fileKey(root, e.path));
+          return e.action !== 'create' && file && !file.deleted && file.model.getValue() !== e.before;
+        });
+        if (changed) {
+          toast(changed.path + ' changed in the meantime: ask again', true);
+          return;
+        }
+        dialog.close();
+        await applyEdits(own);
+        toast('Applied: check it, then save');
+      });
+    }).catch(error => {
+      if (dialog.open) body.replaceChildren(errorBox(error));
+    });
+  }
+
+  function selection() {
+    const file = active && opened.get(active);
+    const range = editor.getSelection();
+    if (!file || !range || range.isEmpty()) return null;
+    return {path: file.path, text: file.model.getValueInRange(range)};
+  }
+
+  async function composeDialog() {
+    const asked = await textDialog('Compose', 'Say what the proxy should do, or ask about it. Your unsaved text is taken into account, and nothing changes until you apply and save.',
+      'What do you need?', 'Send');
+    if (asked) assistDialog('Compose', {request: asked, selection: selection()});
+  }
+
+  const contextActions = [
+    ['apigee.explain', 'Explain', 'Explain what this does and when it runs in the flow.'],
+    ['apigee.review', 'Review', 'Review this: list what could go wrong, on Edge and on hybrid. Change nothing.'],
+  ];
+  for (const [actionId, label, asked] of contextActions) {
+    disposables.push(editor.addAction({id: actionId, label, contextMenuGroupId: 'apigee', run: () => {
+      const file = active && opened.get(active);
+      if (file) assistDialog(label, {request: asked, selection: selection() || {path: file.path, text: file.model.getValue()}});
+    }}));
+  }
+
+  const fixCommand = editor.addCommand(0, (accessor, problem) => fixProblem(problem));
+  disposables.push(...['xml', 'javascript'].map(language => monaco.languages.registerCodeActionProvider(language, {
+    provideCodeActions(model, range) {
+      const file = [...opened.values()].find(f => f.model === model);
+      const here = findings.filter(p => file && p.bundle === file.bundle && p.file === file.path && p.span
+        && p.span.line <= range.endLineNumber && p.span.endLine >= range.startLineNumber);
+      return {dispose() {}, actions: here.map(p => ({title: 'Fix ' + p.rule, kind: 'quickfix',
+        command: {id: fixCommand, title: 'Fix ' + p.rule, arguments: [p]}}))};
+    }})));
+
+  function fixProblem(problem) {
+    assistDialog('Fix ' + problem.rule, {finding: {bundle: problem.findingBundle, rule: problem.rule, location: problem.location}});
   }
 
   async function createPolicy(entry, name, segment) {
@@ -1945,7 +2197,7 @@ async function editorView(id, isCurrent) {
     const started = performance.now();
     let result;
     try {
-      result = await api.editorCheck(id, dirty().map(f => ({path: f.path, content: f.model.getValue()})));
+      result = await api.editorCheck(id, buffers());
     } catch (error) {
       if (asked === checks && isCurrent()) status.textContent = error.message;
       return;
@@ -1970,8 +2222,10 @@ async function editorView(id, isCurrent) {
     saving = true;
     const contents = files.map(f => f.model.getValue());
     try {
-      await api.editorSave(id, files.map((f, i) => ({path: f.path, content: contents[i], base: f.base})));
-      files.forEach((f, i) => { f.base = contents[i]; });
+      await api.editorSave(id, files.map((f, i) => f.deleted ? {path: f.path, deleted: true, base: f.base}
+        : {path: f.path, content: contents[i], base: f.base}));
+      files.forEach((f, i) => { f.base = f.deleted ? null : contents[i]; });
+      files.filter(f => f.deleted).forEach(f => forget(f));
       toast(files.length === 1 ? 'Saved ' + files[0].path : 'Saved ' + files.length + ' files');
       renderAll();
       check();
@@ -1990,14 +2244,14 @@ async function editorView(id, isCurrent) {
     opened.forEach(file => file.model.dispose());
   };
 
-  const page = h('div', {class: 'editor-page'},
+  const page = pageElement = h('div', {class: 'editor-page'},
     h('div', {class: 'editor-head'},
       h('a', {href: '#/proxy/' + encodeURIComponent(id)}, '← ' + workspace.proxy),
       status,
       h('span', {class: 'spacer'}),
-      renameButton, newPolicyButton, saveButton),
+      composeButton, renameButton, newPolicyButton, saveButton),
     h('div', {class: 'editor-body'}, tree, h('div', {class: 'editor-main'}, tabBar, host), rail),
-    h('div', {class: 'editor-problems'}, problemsHead, problemsList));
+    problemsPanel, simulatePanel);
 
   renderAll();
   const first = workspace.bundles[0].files.find(f => f.path === editorReturn)

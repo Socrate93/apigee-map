@@ -12,6 +12,9 @@ import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.model.BundleReport;
 import dev.apigeemap.model.Issue;
 import dev.apigeemap.model.Policy;
+import dev.apigeemap.render.FixContextRenderer;
+import dev.apigeemap.simulation.Simulation;
+import dev.apigeemap.simulation.Simulator;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.IOException;
@@ -25,6 +28,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -47,6 +51,10 @@ final class EditorService {
     private static final long MAX_TEXT_SIZE = 1_000_000;
     /** Holds XML the analysis reads; XML under resources/ belongs to scripts and transformations. */
     private static final Set<String> ANALYZED_FOLDERS = Set.of("", "policies", "proxies", "targets", "sharedflows");
+    /** Applications, which a request about the proxy does not need. */
+    private static final List<String> UNSENT_FOLDERS = List.of("resources/node/", "resources/hosted/");
+    /** A proxy is sent with a request when its text files hold at most this many characters. */
+    private static final long MAX_COMPOSED = 400_000;
 
     /** A file of a bundle; {@code text} false when it cannot be opened in the editor. */
     record EditorFile(String path, boolean text) {
@@ -143,29 +151,163 @@ final class EditorService {
      * right after. Answers with the same check whatever the state of the text.
      */
     Check check(String id, Map<?, ?> request) throws IOException {
-        Path bundle = service.bundleDir(id);
         String name = bundles(id).keySet().iterator().next();
+        return inShadow(id, request, copy -> check(name, copy));
+    }
+
+    private Check check(String name, Path copy) throws IOException {
+        List<Problem> syntax = syntax(name, copy);
+        if (!syntax.isEmpty()) return new Check(false, syntax, List.of(), null, null);
+        try {
+            BundleReport report = service.analyzer().analyze(BundleLocator.locate(copy));
+            return check(report, service.migrate(report));
+        } catch (IOException | RuntimeException e) {
+            return new Check(false, List.of(), List.of(),
+                    String.valueOf(e.getMessage()).replace(copy.toString(), name), null);
+        }
+    }
+
+    private interface InShadow<T> {
+        T run(Path copy) throws IOException;
+    }
+
+    /** Runs {@code work} on a copy of the bundle with the {@code buffers} of the request, deleted right after. */
+    private <T> T inShadow(String id, Map<?, ?> request, InShadow<T> work) throws IOException {
+        Path bundle = service.bundleDir(id);
         Path shadow = Files.createTempDirectory("apigee-map-editor-");
         try {
             Path copy = shadow.resolve(bundle.getFileName().toString());
             copyTree(bundle, copy);
             for (Buffer buffer : buffers(request)) {
                 Path file = inside(copy, buffer.path());
-                Files.createDirectories(file.getParent());
-                Files.writeString(file, buffer.content());
+                if (buffer.deleted()) {
+                    Files.deleteIfExists(file);
+                } else {
+                    Files.createDirectories(file.getParent());
+                    Files.writeString(file, buffer.content());
+                }
             }
-            List<Problem> syntax = syntax(name, copy);
-            if (!syntax.isEmpty()) return new Check(false, syntax, List.of(), null, null);
-            try {
-                BundleReport report = service.analyzer().analyze(BundleLocator.locate(copy));
-                return check(report, service.migrate(report));
-            } catch (IOException | RuntimeException e) {
-                return new Check(false, List.of(), List.of(),
-                        String.valueOf(e.getMessage()).replace(copy.toString(), name), null);
-            }
+            return work.run(copy);
         } finally {
             deleteTree(shadow);
         }
+    }
+
+    /**
+     * Asks the backend about the text being edited, buffers included: to fix {@code {finding: {bundle, rule, location}}}
+     * or to answer {@code {request, selection?: {path, text}}}. Nothing is kept or written. Answers {@code {summary,
+     * warnings, edits, review}}, or {@code {error}}: {@code review} is what the checks say of the text with the edits.
+     */
+    Map<String, Object> assist(String id, Map<?, ?> request) throws IOException {
+        String name = bundles(id).keySet().iterator().next();
+        return inShadow(id, request, copy -> {
+            Check before = check(name, copy);
+            if (!before.analyzed()) {
+                throw new UiService.UiException(409, "Fix the XML of the proxy first: it cannot be analyzed");
+            }
+            BundleReport report = service.analyzer().analyze(BundleLocator.locate(copy));
+            Map<String, Object> answer = request.get("finding") instanceof Map<?, ?> finding
+                    ? fix(report, finding) : compose(report, before.outline(), copy, request);
+            if (answer.containsKey("error")) return answer;
+            @SuppressWarnings("unchecked")
+            List<UiService.ProposedEdit> edits = (List<UiService.ProposedEdit>) answer.get("edits");
+            for (UiService.ProposedEdit edit : edits) {
+                if (!edit.bundle().equals(report.name())) continue;
+                Path file = inside(copy, edit.path());
+                if (edit.after() == null) {
+                    Files.deleteIfExists(file);
+                } else {
+                    Files.createDirectories(file.getParent());
+                    Files.writeString(file, edit.after());
+                }
+            }
+            answer.put("review", review(before, check(name, copy)));
+            return answer;
+        });
+    }
+
+    /** Plays one call through the proxy as it would be with {@code buffers} saved; see {@link Simulator}. */
+    Simulation.Result simulate(String id, Map<?, ?> request) throws IOException {
+        String name = bundles(id).keySet().iterator().next();
+        return inShadow(id, request, copy -> {
+            Check check = check(name, copy);
+            if (!check.analyzed()) {
+                throw new UiService.UiException(409, "Fix the XML of the proxy first: it cannot be analyzed");
+            }
+            return Simulator.run(service.analyzer().analyze(BundleLocator.locate(copy)), input(request));
+        });
+    }
+
+    private static Simulation.Input input(Map<?, ?> request) {
+        Set<String> failing = new LinkedHashSet<>();
+        if (request.get("failing") instanceof List<?> names) names.forEach(n -> failing.add(String.valueOf(n)));
+        return new Simulation.Input(string(request, "verb"), string(request, "path"), strings(request, "headers"),
+                string(request, "body"), string(request, "status"), string(request, "targetBody"),
+                strings(request, "variables"), failing);
+    }
+
+    private static String string(Map<?, ?> request, String name) {
+        return request.get(name) instanceof String value ? value : null;
+    }
+
+    private static Map<String, String> strings(Map<?, ?> request, String name) {
+        Map<String, String> values = new LinkedHashMap<>();
+        if (request.get(name) instanceof Map<?, ?> map) {
+            map.forEach((key, value) -> values.put(String.valueOf(key), String.valueOf(value)));
+        }
+        return values;
+    }
+
+    private Map<String, Object> fix(BundleReport report, Map<?, ?> picked) throws IOException {
+        Finding finding = service.migrate(report).findings().stream()
+                .filter(f -> f.bundle().equals(picked.get("bundle")) && f.rule().equals(picked.get("rule"))
+                        && f.location().equals(picked.get("location")))
+                .findFirst().orElseThrow(() -> new UiService.UiException(404, "This finding is gone"));
+        FixContext context = FixContext.of(finding, FixContext.bundles(report));
+        return service.ask("fix", new FixContextRenderer().model(context), context.files());
+    }
+
+    private Map<String, Object> compose(BundleReport report, EditorOutline outline, Path copy, Map<?, ?> request)
+            throws IOException {
+        if (!(request.get("request") instanceof String asked) || asked.isBlank()) {
+            throw new UiService.UiException(400, "Say what you need");
+        }
+        List<FixContext.SourceFile> files = new ArrayList<>();
+        long size = 0;
+        for (EditorFile file : files(copy)) {
+            if (!file.text() || UNSENT_FOLDERS.stream().anyMatch(file.path()::startsWith)) continue;
+            String content = text(copy.resolve(file.path()));
+            size += content.length();
+            files.add(new FixContext.SourceFile(report.name(), file.path(), content));
+        }
+        if (size > MAX_COMPOSED) throw new UiService.UiException(413, "This proxy is too large to be sent at once");
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("proxy", report.name());
+        body.put("request", asked);
+        if (request.get("selection") != null) body.put("selection", request.get("selection"));
+        body.put("flow", outline.text());
+        body.put("files", files);
+        return service.ask("compose", body, files);
+    }
+
+    /** What changes between two checks: {@code {analyzed, added, resolved}}. */
+    private static Map<String, Object> review(Check before, Check after) {
+        Map<String, Object> review = new LinkedHashMap<>();
+        review.put("analyzed", after.analyzed());
+        if (!after.analyzed()) {
+            review.put("added", after.problems());
+            review.put("resolved", 0);
+            return review;
+        }
+        List<String> had = before.problems().stream().map(EditorService::identity).toList();
+        List<String> has = after.problems().stream().map(EditorService::identity).toList();
+        review.put("added", after.problems().stream().filter(p -> !had.contains(identity(p))).toList());
+        review.put("resolved", had.stream().filter(p -> !has.contains(p)).count());
+        return review;
+    }
+
+    private static String identity(Problem problem) {
+        return problem.rule() + "\u0000" + problem.bundle() + "\u0000" + problem.file() + "\u0000" + problem.location();
     }
 
     private static Check check(BundleReport report, MigrationReport migration) throws IOException {
@@ -254,20 +396,28 @@ final class EditorService {
         Map<Path, String> writes = new LinkedHashMap<>();
         for (Buffer file : files) {
             Path path = inside(bundle, file.path());
-            if (file.base() == null) {
+            if (file.deleted()) {
+                if (!Objects.equals(text(path), file.base())) {
+                    throw new UiService.UiException(409, file.path() + " changed since it was opened: reload the page");
+                }
+            } else if (file.base() == null) {
                 if (Files.exists(path)) throw new UiService.UiException(409, file.path() + " already exists");
             } else if (!Files.isRegularFile(path)) {
                 throw new UiService.UiException(404, "Unknown file " + file.path());
             } else if (!Objects.equals(text(path), file.base())) {
                 throw new UiService.UiException(409, file.path() + " changed since it was opened: reload the page");
             }
-            writes.put(path, file.content());
+            writes.put(path, file.deleted() ? null : file.content());
         }
         try (SourceHistory history = SourceHistory.open(bundle, historyRoot)) {
             history.record("Manual changes");
             for (Map.Entry<Path, String> write : writes.entrySet()) {
-                Files.createDirectories(write.getKey().getParent());
-                Files.writeString(write.getKey(), write.getValue());
+                if (write.getValue() == null) {
+                    Files.delete(write.getKey());
+                } else {
+                    Files.createDirectories(write.getKey().getParent());
+                    Files.writeString(write.getKey(), write.getValue());
+                }
             }
             return history.record(files.size() == 1 ? "Edit " + files.get(0).path() : "Edit " + files.size() + " files");
         }
@@ -304,7 +454,8 @@ final class EditorService {
         return plan;
     }
 
-    private record Buffer(String path, String content, String base) {
+    /** @param deleted true when the file goes away; it then has no content */
+    private record Buffer(String path, String content, String base, boolean deleted) {
     }
 
     private static List<Buffer> buffers(Map<?, ?> request) {
@@ -312,9 +463,11 @@ final class EditorService {
         if (!(list instanceof List<?> items)) return List.of();
         List<Buffer> buffers = new ArrayList<>();
         for (Object item : items) {
-            if (item instanceof Map<?, ?> map && map.get("path") instanceof String path
-                    && map.get("content") instanceof String content) {
-                buffers.add(new Buffer(path, content, map.get("base") instanceof String base ? base : null));
+            if (item instanceof Map<?, ?> map && map.get("path") instanceof String path) {
+                boolean deleted = Boolean.TRUE.equals(map.get("deleted"));
+                if (!deleted && !(map.get("content") instanceof String)) continue;
+                buffers.add(new Buffer(path, map.get("content") instanceof String content ? content : null,
+                        map.get("base") instanceof String base ? base : null, deleted));
             }
         }
         return buffers;

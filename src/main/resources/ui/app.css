@@ -250,7 +250,42 @@ table.tests .purpose { color: var(--fg); margin: 2px 0; }
 .editor-problems-head { display: flex; align-items: center; gap: 12px; padding: 6px 16px; border-bottom: 1px solid var(--line); }
 .editor-problems-list { overflow-y: auto; padding: 2px 8px; }
 .editor-problems-list .meta { padding: 8px; }
-.editor-problem { display: flex; width: 100%; align-items: center; gap: 10px; border: 0; background: none; padding: 3px 8px; text-align: left; }
+.editor-page.simulating { grid-template-rows: auto minmax(0, 1fr) 46vh; }
+.editor-file.deleted .name { text-decoration: line-through; }
+.editor-panel-tabs { display: flex; gap: 12px; }
+.editor-panel-tabs .link { color: var(--muted); font-weight: 600; }
+.editor-panel-tabs .link.on { color: var(--fg); }
+.editor-simulate { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; background: var(--card); border-top: 1px solid var(--line); }
+.editor-simulate[hidden], .editor-problems[hidden] { display: none; }
+.editor-sim-body { display: grid; grid-template-columns: 420px minmax(0, 1fr); min-height: 0; }
+.editor-sim-form { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; align-content: start; overflow-y: auto; padding: 8px 16px; border-right: 1px solid var(--line); font-size: 12px; }
+.editor-sim-form label { display: grid; gap: 2px; min-width: 0; }
+.editor-sim-form textarea, .editor-sim-form input { box-sizing: border-box; width: 100%; font: 12px/1.4 monospace; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; }
+.editor-sim-line { grid-column: 1 / -1; display: flex; gap: 8px; }
+.editor-sim-line input { flex: 1; }
+.editor-sim-line input, .editor-sim-line select { width: auto; min-width: 0; }
+.editor-trace { overflow-y: auto; padding: 6px 16px; }
+.editor-trace-head { display: flex; align-items: center; gap: 10px; padding-bottom: 6px; }
+.editor-trace-head .meta { overflow: hidden; margin: 0; text-overflow: ellipsis; white-space: nowrap; }
+.editor-trace .meta { margin: 2px 0; }
+.editor-trace-entry summary { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+.editor-trace-entry summary .meta { overflow: hidden; margin: 0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.editor-trace-entry > :not(summary) { margin-left: 16px; font-size: 12px; overflow-wrap: anywhere; }
+.editor-trace-entry.sim-skipped summary { opacity: .55; }
+.editor-trace-entry.sim-failed .mono { color: var(--bad, #b3261e); }
+.editor-step.sim-ran { border-left-color: #2e7d32; }
+.editor-step.sim-assumed { border-left-color: #b58900; }
+.editor-step.sim-failed { border-left-color: #b3261e; }
+.editor-step.sim-skipped { opacity: .55; }
+.editor-step.sim-not_simulated { border-left-style: dashed; }
+.editor-problem-row { display: flex; align-items: center; gap: 8px; }
+.editor-problem-row .link { padding-right: 8px; }
+.editor-assist { min-width: 0; }
+.editor-answer { white-space: pre-wrap; }
+.editor-assist-file { border: 0; background: none; padding: 6px 10px; white-space: nowrap; }
+.editor-assist-file.on { background: var(--card); }
+.editor-diff { height: 46vh; border: 1px solid var(--line); border-top: 0; }
+.editor-problem { display: flex; flex: 1; min-width: 0; align-items: center; gap: 10px; border: 0; background: none; padding: 3px 8px; text-align: left; }
 .editor-problem:hover:not(:disabled) { background: var(--soft); }
 .editor-problem:disabled { cursor: default; color: inherit; }
 .editor-problem .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
