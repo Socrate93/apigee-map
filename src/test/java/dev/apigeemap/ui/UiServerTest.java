@@ -191,11 +191,8 @@ class UiServerTest {
 
         // what the page shows stays that of the analysis until the next one, even after a restart
         restart();
-        Path policy;
-        try (Stream<Path> files = Files.list(root.resolve("orders-api/apiproxy/policies"))) {
-            policy = files.findFirst().orElseThrow();
-        }
-        Files.delete(policy);
+        // a policy with a finding of its own: without one, the findings of the next analysis are the same
+        Files.delete(root.resolve("orders-api/apiproxy/policies/Verify-API-Key.xml"));
         Map<?, ?> opened = (Map<?, ?>) Json.parse(get("/api/proxy?id=orders-api").body());
         assertEquals(analyzed, Json.write(opened.get("migration")));
         assertEquals(true, ((Map<?, ?>) opened.get("summary")).get("outdated"));
