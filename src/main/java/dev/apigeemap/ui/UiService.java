@@ -39,6 +39,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -60,10 +61,15 @@ final class UiService {
     /** Folders below the proxies root searched for apiproxy/ bundles. */
     private static final int SCAN_DEPTH = 6;
 
-    /** A proxy found under the proxies root; {@code id} is its folder relative to the root. */
+    /**
+     * A proxy found under the proxies root; {@code id} is its folder relative to the root.
+     *
+     * @param analyzed when the listed figures were computed, null when it never was or in a fresh analysis
+     * @param outdated the proxy or what the figures depend on changed since
+     */
     record ProxySummary(String id, String name, String revision, String description, int sharedFlows,
                         long errors, long warnings, long infos, long autoFixes, long manual, boolean migrated,
-                        String error) {
+                        String error, String analyzed, boolean outdated) {
     }
 
     /** @param scripts how many of its scripts were reviewed as they are now, and since when a review runs */
@@ -136,6 +142,7 @@ final class UiService {
     private final ScriptReviews reviews;
     private final ProxyDocs docs;
     private final TestPlans plans;
+    private final ProxyStats stats;
     private final Path services;
     private final TokenStore token = new TokenStore();
     private final Map<String, Proposal> proposals = new LinkedHashMap<>();
@@ -144,8 +151,8 @@ final class UiService {
 
     /**
      * The script reviews are kept in {@code reviews/}, the documentation in {@code docs/}, the test plans in {@code
-     * tests/}, and the services ports move targets to are written to {@code services/<proxy>/<service>}, next to
-     * {@code historyRoot}.
+     * tests/}, the figures of the proxy list in {@code stats.json}, and the services ports move targets to are
+     * written to {@code services/<proxy>/<service>}, next to {@code historyRoot}.
      */
     UiService(Path settingsFile, Path historyRoot, Path backendConfig) throws IOException {
         this.settingsFile = settingsFile;
@@ -154,6 +161,7 @@ final class UiService {
         this.reviews = ScriptReviews.at(historyRoot.toAbsolutePath().resolveSibling("reviews"));
         this.docs = ProxyDocs.at(historyRoot.toAbsolutePath().resolveSibling("docs"));
         this.plans = TestPlans.at(historyRoot.toAbsolutePath().resolveSibling("tests"));
+        this.stats = ProxyStats.at(historyRoot.toAbsolutePath().resolveSibling("stats.json"));
         this.services = historyRoot.toAbsolutePath().resolveSibling("services");
         this.settings = Settings.load(settingsFile);
     }
@@ -237,34 +245,122 @@ final class UiService {
         return new PathCheck(path, true, "");
     }
 
-    List<ProxySummary> proxies() throws IOException {
+    /**
+     * The proxies found under the root as {@code {proxies}}, with the figures of their last analysis: nothing is
+     * analyzed here. {@code running} tells since when {@link #analyzeProxies} runs.
+     */
+    Map<String, Object> proxies() throws IOException {
         Settings s = settings();
-        SharedFlowRepository repository = repository(s);
-        Migrator migrator = new Migrator(s.migrationOptions(), repository, reviews);
+        Map<String, List<ProxyDocs.SourceFile>> folders = new HashMap<>();
         List<ProxySummary> result = new ArrayList<>();
-        for (Path dir : proxyDirs(s)) {
-            String id = id(s, dir);
-            try {
-                BundleReport analysis = new BundleAnalyzer(repository).analyze(BundleLocator.locate(dir));
-                result.add(summary(s, id, analysis, migrator.migrate(analysis, null)));
-            } catch (IOException | RuntimeException e) {
-                result.add(new ProxySummary(id, dir.getFileName().toString(), null, null, 0, 0, 0, 0, 0, 0, false,
-                        e.getMessage()));
-            }
-        }
-        return result;
+        for (Path dir : proxyDirs(s)) result.add(listed(s, dir, folders));
+        return withRunning("analyze", "proxies", Map.of("proxies", result));
     }
 
-    ProxyDetail proxy(String id) throws IOException {
-        Settings s = settings();
-        BundleReport analysis = analyze(s, id);
-        MigrationReport migration = migrator(s).migrate(analysis, null);
+    /** The proxy as listed: what its last analysis found, whether it is migrated being looked up now. */
+    private ProxySummary listed(Settings s, Path dir, Map<String, List<ProxyDocs.SourceFile>> folders) {
+        String id = id(s, dir);
+        Optional<ProxyStats.Entry> stored = stats.get(dir);
+        if (stored.isEmpty()) {
+            return new ProxySummary(id, dir.getFileName().toString(), null, null, 0, 0, 0, 0, 0, 0, false, null, null,
+                    false);
+        }
+        ProxySummary p = stored.get().summary();
+        return new ProxySummary(id, p.name(), p.revision(), p.description(), p.sharedFlows(), p.errors(), p.warnings(),
+                p.infos(), p.autoFixes(), p.manual(), migrated(s, p.name()), p.error(),
+                stored.get().analyzed().toString(),
+                !stored.get().stamp().equals(ProxyStats.stamp(s, stored.get().bundles(), folders)));
+    }
+
+    /**
+     * Analyzes the proxies never analyzed or changed since, or all of them when {@code all} is set, and keeps their
+     * figures one by one, so that what is done stays if it stops. Answers {@code {analyzed, failed}}. While it runs,
+     * asking again waits for it.
+     */
+    Map<String, Object> analyzeProxies(boolean all) throws IOException {
+        return running.run("analyze", "proxies", () -> {
+            Settings s = settings();
+            SharedFlowRepository repository = repository(s);
+            Migrator migrator = new Migrator(s.migrationOptions(), repository, reviews);
+            Map<String, List<ProxyDocs.SourceFile>> folders = new HashMap<>();
+            int analyzed = 0;
+            int failed = 0;
+            for (Path dir : proxyDirs(s)) {
+                ProxySummary listed = listed(s, dir, folders);
+                if (!all && listed.analyzed() != null && !listed.outdated()) continue;
+                analyzed++;
+                try {
+                    BundleReport analysis = new BundleAnalyzer(repository).analyze(BundleLocator.locate(dir));
+                    record(s, dir, analysis, migrator.migrate(analysis, null), folders);
+                } catch (IOException | RuntimeException e) {
+                    failed++;
+                    recordFailure(s, dir, e);
+                }
+            }
+            return Map.of("analyzed", analyzed, "failed", failed);
+        });
+    }
+
+    /** Keeps what an analysis found for the proxy list and the page of the proxy; {@code migration} is a dry run. */
+    private ProxySummary record(Settings s, Path dir, BundleReport analysis, MigrationReport migration,
+                                Map<String, List<ProxyDocs.SourceFile>> folders) throws IOException {
+        ProxySummary summary = summary(s, id(s, dir), analysis, migration);
         List<ScriptReviewRequest.Target> scripts = ScriptReviewRequest.scripts(analysis);
-        return new ProxyDetail(summary(s, id, analysis, migration), analysis.path(), analysis.policies().size(),
-                analysis.dependencies().size(), output(s, analysis.name()).map(Path::toString).orElse(null),
-                migration, new ReviewStatus(scripts.size(),
-                (int) scripts.stream().filter(t -> reviews.has(t.fingerprint())).count(),
-                running.since("review", id).map(Instant::toString).orElse(null)));
+        stats.putDetail(dir, new ProxyDetail(summary, analysis.path(), analysis.policies().size(),
+                analysis.dependencies().size(), null, migration, new ReviewStatus(scripts.size(),
+                (int) scripts.stream().filter(t -> reviews.has(t.fingerprint())).count(), null)));
+        Map<String, String> bundles = new LinkedHashMap<>();
+        FixContext.bundles(analysis).forEach((name, bundle) ->
+                bundles.put(name, Path.of(bundle.path()).toAbsolutePath().normalize().toString()));
+        stats.put(dir, new ProxyStats.Entry(summary, bundles, ProxyStats.stamp(s, bundles, folders), Instant.now()));
+        return summary;
+    }
+
+    private void recordFailure(Settings s, Path dir, Exception e) {
+        String name = dir.getFileName().toString();
+        Map<String, String> bundles = Map.of(name, dir.toString());
+        stats.put(dir, new ProxyStats.Entry(new ProxySummary(id(s, dir), name, null, null, 0, 0, 0, 0, 0, 0, false,
+                String.valueOf(e.getMessage()), null, false), bundles, ProxyStats.stamp(s, bundles, new HashMap<>()),
+                Instant.now()));
+    }
+
+    /**
+     * The page of the proxy as its last analysis left it, see {@link ProxyDetail}: nothing is analyzed here. Without
+     * {@code migration} when it never was or failed. {@code running} tells since when {@link #analyzeProxy} runs.
+     */
+    Map<String, Object> proxy(String id) throws IOException {
+        Settings s = settings();
+        Path dir = resolve(s, id);
+        BundleLocator.locate(dir);
+        ProxySummary summary = listed(s, dir, new HashMap<>());
+        Map<String, Object> m = new LinkedHashMap<>(Map.of("path", dir.toString()));
+        if (summary.analyzed() != null && summary.error() == null) {
+            stats.detail(dir).ifPresent(stored -> stored.forEach((key, value) -> m.put(String.valueOf(key), value)));
+        }
+        m.put("summary", summary);
+        m.put("outputDir", output(s, summary.name()).map(Path::toString).orElse(null));
+        if (m.get("scripts") instanceof Map<?, ?> scripts) {
+            Map<Object, Object> status = new LinkedHashMap<>(scripts);
+            status.put("running", running.since("review", id).map(Instant::toString).orElse(null));
+            m.put("scripts", status);
+        }
+        return withRunning("analyze", id, m);
+    }
+
+    /** Analyzes the proxy and answers as {@link #proxy}. While it runs, asking again waits for it. */
+    Map<String, Object> analyzeProxy(String id) throws IOException {
+        return running.run("analyze", id, () -> {
+            Settings s = settings();
+            Path dir = resolve(s, id);
+            try {
+                BundleReport analysis = analyze(s, id);
+                record(s, dir, analysis, migrator(s).migrate(analysis, null), new HashMap<>());
+            } catch (IOException | RuntimeException e) {
+                recordFailure(s, dir, e);
+                throw e;
+            }
+            return proxy(id);
+        });
     }
 
     String mapHtml(String id) throws IOException {
@@ -518,7 +614,9 @@ final class UiService {
             }
             deleteTree(target);
         }
-        return migrator(s).migrate(analysis, target);
+        MigrationReport migration = migrator(s).migrate(analysis, target);
+        record(s, resolve(s, id), analysis, migrator(s).migrate(analysis, null), new HashMap<>());
+        return migration;
     }
 
     /**
@@ -663,7 +761,7 @@ final class UiService {
         return findings.stream()
                 .filter(f -> f.bundle().equals(picked.get("bundle")) && f.rule().equals(picked.get("rule"))
                         && f.location().equals(picked.get("location")))
-                .findFirst().orElseThrow(() -> new UiException(404, "This finding is gone: reload the proxy"));
+                .findFirst().orElseThrow(() -> new UiException(404, "This finding is gone: analyze the proxy again"));
     }
 
     /**
@@ -1019,13 +1117,13 @@ final class UiService {
         Settings s = settings();
         SharedFlowRepository repository = repository(s);
         Migrator migrator = new Migrator(s.migrationOptions(), repository, reviews);
+        Map<String, List<ProxyDocs.SourceFile>> folders = new HashMap<>();
         int failed = 0;
         for (Path dir : proxyDirs(s)) {
-            String id = id(s, dir);
             try {
                 BundleReport analysis = new BundleAnalyzer(repository).analyze(BundleLocator.locate(dir));
                 MigrationReport migration = migrator.migrate(analysis, null);
-                proxies.add(summary(s, id, analysis, migration));
+                proxies.add(record(s, dir, analysis, migration, folders));
                 for (Finding finding : migration.findings()) {
                     findingsByRule.computeIfAbsent(finding.rule(), r -> new ArrayList<>()).add(finding);
                     proxiesByRule.computeIfAbsent(finding.rule(), r -> new LinkedHashSet<>()).add(analysis.name());
@@ -1038,6 +1136,7 @@ final class UiService {
                 }
             } catch (IOException | RuntimeException e) {
                 failed++;
+                recordFailure(s, dir, e);
             }
         }
         List<RuleStat> rules = new ArrayList<>();
@@ -1065,16 +1164,18 @@ final class UiService {
 
     private ProxySummary summary(Settings s, String id, BundleReport analysis, MigrationReport migration) {
         List<Finding> findings = migration.findings();
-        // the Migrator writes <output>/<name>/apiproxy plus sharedflows/ next to it
-        boolean migrated = output(s, analysis.name())
-                .map(p -> Files.isDirectory(p.resolve(analysis.name()).resolve("apiproxy"))).orElse(false);
         return new ProxySummary(id, analysis.name(), analysis.revision(), analysis.description(),
                 migration.bundles().size() - 1,
                 count(findings, Issue.Severity.ERROR), count(findings, Issue.Severity.WARN),
                 count(findings, Issue.Severity.INFO),
                 findings.stream().filter(f -> f.fix() == Finding.Fix.AUTO).count(),
                 findings.stream().filter(f -> f.fix() == Finding.Fix.MANUAL).count(),
-                migrated, null);
+                migrated(s, analysis.name()), null, null, false);
+    }
+
+    /** The Migrator writes {@code <output>/<name>/apiproxy} plus {@code sharedflows/} next to it. */
+    private static boolean migrated(Settings s, String name) {
+        return output(s, name).map(p -> Files.isDirectory(p.resolve(name).resolve("apiproxy"))).orElse(false);
     }
 
     private static long count(List<Finding> findings, Issue.Severity severity) {

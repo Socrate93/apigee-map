@@ -459,7 +459,7 @@ class UiFixTest {
     }
 
     private Map<?, ?> detail() throws Exception {
-        return (Map<?, ?>) Json.parse(get("/api/proxy?id=factorization-api").body());
+        return (Map<?, ?>) Json.parse(send("/api/proxy/analyze?id=factorization-api", "POST", "").body());
     }
 
     private static List<Map<?, ?>> findings(Map<?, ?> detail) {
@@ -476,7 +476,7 @@ class UiFixTest {
 
     /** Asks for the fix of the DES-10 finding at the copy of audit.js. */
     private HttpResponse<String> askFix() throws Exception {
-        Map<?, ?> detail = (Map<?, ?>) Json.parse(get("/api/proxy?id=factorization-api").body());
+        Map<?, ?> detail = (Map<?, ?>) Json.parse(send("/api/proxy/analyze?id=factorization-api", "POST", "").body());
         Map<?, ?> finding = ((List<?>) ((Map<?, ?>) detail.get("migration")).get("bundles")).stream()
                 .flatMap(b -> ((List<?>) ((Map<?, ?>) b).get("findings")).stream()).map(f -> (Map<?, ?>) f)
                 .filter(f -> f.get("rule").equals("DES-10") && ((String) f.get("location")).contains("audit-copy.js"))

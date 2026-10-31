@@ -140,7 +140,10 @@ public final class UiServer {
                 json(exchange, 200, Map.of());
             }
             case "GET /api/proxies" -> json(exchange, 200, service.proxies());
+            case "POST /api/proxies/analyze" -> json(exchange, 200,
+                    service.analyzeProxies("true".equals(query.get("all"))));
             case "GET /api/proxy" -> json(exchange, 200, service.proxy(query.get("id")));
+            case "POST /api/proxy/analyze" -> json(exchange, 200, service.analyzeProxy(query.get("id")));
             case "GET /api/variables" -> json(exchange, 200, service.variables(query.get("id")));
             case "GET /api/map" -> send(exchange, 200, "text/html", service.mapHtml(query.get("id")));
             case "GET /api/report" -> {

@@ -45,7 +45,9 @@ const api = {
   saveSettings: settings => request('PUT', '/api/settings', settings),
   saveToken: token => request('PUT', '/api/token', {token}),
   proxies: () => request('GET', '/api/proxies'),
+  analyzeProxies: all => request('POST', '/api/proxies/analyze' + (all ? '?all=true' : '')),
   proxy: id => request('GET', '/api/proxy?id=' + encodeURIComponent(id)),
+  analyzeProxy: id => request('POST', '/api/proxy/analyze?id=' + encodeURIComponent(id)),
   apply: (id, overwrite) => request('POST', '/api/apply?id=' + encodeURIComponent(id) + (overwrite ? '&overwrite=true' : '')),
   overview: () => request('GET', '/api/overview'),
   variables: id => request('GET', '/api/variables?id=' + encodeURIComponent(id)),
@@ -212,6 +214,7 @@ window.addEventListener('hashchange', () => {
     history.replaceState(null, '', currentHash || '#/settings');
     return;
   }
+  if (TABS_ON_REQUEST.includes(detailState.tab)) detailState.tab = 'findings';
   currentHash = location.hash;
   route();
 });
@@ -225,14 +228,41 @@ window.addEventListener('beforeunload', event => {
 
 const proxyFilter = {text: '', status: ''};
 
+function outdatedBadge(p) {
+  return p.outdated ? h('span', {class: 'badge warn', title: 'Changed since this analysis'}, 'Outdated') : null;
+}
+
 async function proxiesView() {
-  const [{settings}, proxies] = await Promise.all([api.settings(), api.proxies()]);
+  const [{settings}, {proxies, running}] = await Promise.all([api.settings(), api.proxies()]);
+  const toAnalyze = p => !p.analyzed || p.outdated;
+  const pending = proxies.filter(toAnalyze).length;
+  const label = () => pending ? 'Analyze ' + pending + ' proxy(ies)' : 'Analyze all';
+  const analyzeButton = h('button', {type: 'button', class: pending ? 'primary' : '', onclick: () => analyze()}, label());
+  const status = h('p', {class: 'meta'}, proxies.length
+    ? 'Figures of the last analysis of each proxy.' : '');
   const page = h('div', {});
   const head = h('div', {class: 'head'},
     h('div', {}, h('h1', {}, 'Proxies'),
-      h('p', {class: 'meta'}, settings.proxiesRoot ? 'From ' + settings.proxiesRoot : 'No proxies folder configured')),
-    h('div', {class: 'actions'}, h('button', {type: 'button', onclick: route}, 'Refresh')));
+      h('p', {class: 'meta'}, settings.proxiesRoot ? 'From ' + settings.proxiesRoot : 'No proxies folder configured'), status),
+    h('div', {class: 'actions'}, proxies.length ? analyzeButton : null, h('button', {type: 'button', onclick: route}, 'Refresh')));
   page.append(head);
+
+  /** Analyzes the proxies to analyze, or waits for the analysis running since {@code since}. */
+  async function analyze(since) {
+    analyzeButton.disabled = true;
+    analyzeButton.replaceChildren(h('span', {class: 'spinner'}), ' Analyzing…');
+    status.replaceChildren('Analyzing for ', elapsed(since), '. Each proxy is saved as soon as it is done: you can leave this page.');
+    try {
+      const result = await api.analyzeProxies(!pending);
+      toast('Analyzed ' + result.analyzed + ' proxy(ies)' + (result.failed ? ', ' + result.failed + ' failed' : ''), result.failed > 0);
+      if (analyzeButton.isConnected) route();
+    } catch (error) {
+      toast(error.message, true);
+      analyzeButton.disabled = false;
+      analyzeButton.textContent = label();
+    }
+  }
+  if (running) analyze(running);
 
   if (!settings.proxiesRoot) {
     page.append(h('div', {style: 'margin-top:16px'}, empty('Set the folder that contains your exported proxies to get started.',
@@ -248,6 +278,7 @@ async function proxiesView() {
   const sum = key => proxies.reduce((total, p) => total + p[key], 0);
   page.append(cards([
     [proxies.length, 'Proxies'],
+    ...(pending ? [[pending, 'To analyze']] : []),
     [sum('errors'), 'Errors'],
     [sum('warnings'), 'Warnings'],
     [sum('autoFixes'), 'Fixable automatically'],
@@ -259,7 +290,7 @@ async function proxiesView() {
     oninput: e => { proxyFilter.text = e.target.value; fill(); }});
   const statusChips = h('div', {});
   const renderChips = () => statusChips.replaceChildren(chips(
-    [['', 'All'], ['errors', 'With errors'], ['pending', 'Not migrated'], ['migrated', 'Migrated'], ['failed', 'Analysis failed']],
+    [['', 'All'], ['analyze', 'To analyze'], ['errors', 'With errors'], ['pending', 'Not migrated'], ['migrated', 'Migrated'], ['failed', 'Analysis failed']],
     proxyFilter.status, value => { proxyFilter.status = value; renderChips(); fill(); }));
   renderChips();
 
@@ -267,6 +298,7 @@ async function proxiesView() {
     const text = proxyFilter.text.trim().toLowerCase();
     if (text && !(p.name + ' ' + p.id).toLowerCase().includes(text)) return false;
     switch (proxyFilter.status) {
+      case 'analyze': return toAnalyze(p);
       case 'errors': return p.errors > 0;
       case 'pending': return !p.migrated && !p.error;
       case 'migrated': return p.migrated;
@@ -281,14 +313,17 @@ async function proxiesView() {
         onkeydown: e => { if (e.key === 'Enter') location.hash = '#/proxy/' + encodeURIComponent(p.id); }},
       h('td', {}, h('div', {}, h('b', {}, p.name), p.revision ? h('span', {class: 'sub'}, '  rev ' + p.revision) : null),
         h('div', {class: 'sub mono'}, p.id)),
-      p.error
-        ? h('td', {colspan: 6}, h('span', {class: 'badge bad'}, 'Analysis failed'), ' ', h('span', {class: 'sub'}, p.error))
+      !p.analyzed
+        ? h('td', {colspan: 6}, h('span', {class: 'badge'}, 'Not analyzed'))
+        : p.error
+        ? h('td', {colspan: 6}, h('span', {class: 'badge bad'}, 'Analysis failed'), ' ', outdatedBadge(p), ' ', h('span', {class: 'sub'}, p.error))
         : [h('td', {class: 'num'}, p.sharedFlows),
           h('td', {class: 'num'}, count(p.errors, 'ERROR')),
           h('td', {class: 'num'}, count(p.warnings, 'WARN')),
           h('td', {class: 'num'}, count(p.infos, 'INFO')),
           h('td', {class: 'num'}, p.autoFixes),
-          h('td', {}, p.migrated ? h('span', {class: 'badge ok'}, 'Migrated') : h('span', {class: 'badge'}, 'Not migrated'))]));
+          h('td', {}, p.migrated ? h('span', {class: 'badge ok'}, 'Migrated') : h('span', {class: 'badge'}, 'Not migrated'),
+            ' ', outdatedBadge(p), h('div', {class: 'sub'}, 'Analyzed ' + day(p.analyzed)))]));
     body.replaceChildren(...(rows.length ? rows : [h('tr', {}, h('td', {colspan: 7, class: 'sub'}, 'No proxy matches the filter.'))]));
   }
   fill();
@@ -306,6 +341,8 @@ async function proxiesView() {
 // ---------------------------------------------------------------------------------------------------------------
 
 const detailState = {tab: 'findings', severity: '', category: '', fix: ''};
+/** The tabs that read the bundle when shown: a proxy does not open on one, as opening it analyzes nothing. */
+const TABS_ON_REQUEST = ['documentation', 'tests', 'variables', 'map', 'history'];
 /** The likely false positives found by a triage, by proxy id then finding key, until confirmed or kept. */
 const triaged = {};
 
@@ -313,10 +350,56 @@ function findingKey(f) {
   return f.bundle + '\n' + f.rule + '\n' + f.location;
 }
 
+/** After a change made from the page of a proxy: analyzes it again, then shows it. */
+async function reanalyze() {
+  if (location.hash.startsWith('#/proxy/')) {
+    view.replaceChildren(h('div', {class: 'loading'}, 'Analyzing…'));
+    try {
+      await api.analyzeProxy(decodeURIComponent(location.hash.slice('#/proxy/'.length)));
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+  route();
+}
+
 async function proxyView(id) {
   const detail = await api.proxy(id);
   const {summary, migration} = detail;
   const page = h('div', {});
+
+  const analyzeButton = h('button', {type: 'button', class: migration && !summary.outdated ? '' : 'primary', onclick: () => analyze()},
+    migration ? 'Analyze again' : 'Analyze');
+  const status = h('p', {class: 'meta'}, summary.analyzed ? 'Analyzed ' + new Date(summary.analyzed).toLocaleString() : 'Not analyzed yet',
+    ' ', outdatedBadge(summary));
+
+  /** Analyzes the proxy, or waits for the analysis running since {@code since}. */
+  async function analyze(since) {
+    analyzeButton.disabled = true;
+    analyzeButton.replaceChildren(h('span', {class: 'spinner'}), ' Analyzing…');
+    status.replaceChildren('Analyzing for ', elapsed(since));
+    try {
+      await api.analyzeProxy(id);
+      if (analyzeButton.isConnected) route();
+    } catch (error) {
+      toast(error.message, true);
+      if (analyzeButton.isConnected) route();
+    }
+  }
+  if (detail.running) analyze(detail.running);
+
+  if (!migration) {
+    page.append(h('div', {class: 'head'},
+      h('div', {},
+        h('p', {class: 'meta'}, h('a', {href: '#/proxies'}, '← Proxies')),
+        h('h1', {}, summary.name),
+        h('p', {class: 'meta mono'}, detail.path), status),
+      h('div', {class: 'actions'}, analyzeButton)));
+    if (summary.error) page.append(errorBox({message: 'Analysis failed: ' + summary.error}));
+    page.append(h('div', {style: 'margin-top:16px'}, empty('Analyze this proxy to see its findings and its changes.',
+      h('a', {class: 'button', href: '#/editor/' + encodeURIComponent(id)}, 'Open the Editor'))));
+    return page;
+  }
 
   const applyButton = h('button', {type: 'button', class: 'primary', disabled: !detail.outputDir,
       title: detail.outputDir ? 'Writes the migrated proxy and its shared flows to ' + detail.outputDir : 'Set the output folder in Settings first',
@@ -328,8 +411,9 @@ async function proxyView(id) {
       h('h1', {}, summary.name),
       h('p', {class: 'meta'}, [summary.revision ? 'Revision ' + summary.revision : null, summary.description]
         .filter(Boolean).join(' · ')),
-      h('p', {class: 'meta mono'}, detail.path)),
+      h('p', {class: 'meta mono'}, detail.path), status),
     h('div', {class: 'actions'},
+      analyzeButton,
       h('a', {class: 'button', href: '/api/report?id=' + encodeURIComponent(id)}, 'Download report'),
       applyButton)));
 
@@ -422,7 +506,7 @@ function reviewBar(id, scripts) {
     try {
       const result = await api.reviewScripts(id, !pending);
       toast('Reviewed ' + result.reviewed + ' script(s): ' + result.remarks + ' finding(s)');
-      route();
+      reanalyze();
     } catch (error) {
       toast(error.message, true);
       button.disabled = false;
@@ -528,7 +612,7 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
       await api.markFalsePositive(f, triaged[id].get(findingKey(f)));
       triaged[id].delete(findingKey(f));
       toast(f.rule + ' at ' + f.bundle + ' · ' + f.location + ' marked as a false positive');
-      route();
+      reanalyze();
     } catch (error) {
       toast(error.message, true);
     }
@@ -550,7 +634,7 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
     } catch (error) {
       toast(error.message, true);
     }
-    route();
+    reanalyze();
   }
 
   render();
@@ -571,7 +655,7 @@ async function markFalsePositive(finding) {
   try {
     await api.markFalsePositive(finding, reason);
     toast(finding.rule + ' at ' + where + ' marked as a false positive');
-    route();
+    reanalyze();
   } catch (error) {
     toast(error.message, true);
   }
@@ -581,7 +665,7 @@ async function unmarkFalsePositive(falsePositive) {
   try {
     await api.unmarkFalsePositive(falsePositive);
     toast(falsePositive.rule + ' at ' + falsePositive.bundle + ' · ' + falsePositive.location + ' is reported again');
-    route();
+    reanalyze();
   } catch (error) {
     toast(error.message, true);
   }
@@ -726,7 +810,7 @@ async function proposalDialog(title, subtitle, waiting, ask, nothing) {
         + (steps.length ? ', recorded as step ' + steps.map(s => s.id).join(', ') : '')
         + (proposal.service ? '; service written to ' + proposal.service.folder : ''));
       detailState.tab = 'history';
-      route();
+      reanalyze();
     } catch (error) {
       toast(error.message, true);
       accept.textContent = 'Accept';
@@ -787,7 +871,7 @@ function stepView(id, bundle, step) {
     try {
       const done = await api.revertStep(id, bundle.bundle, step.id);
       toast('Undone, recorded as step ' + done.id);
-      route();
+      reanalyze();
     } catch (error) {
       toast(error.message, true);
       button.disabled = false;
