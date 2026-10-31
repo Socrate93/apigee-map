@@ -15,6 +15,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -172,6 +173,26 @@ class EditorTest {
         assertTrue(lanes.stream().map(l -> ((Map<?, ?>) l).get("title")).toList()
                 .containsAll(List.of("ProxyEndpoint default routes", "TargetEndpoint default request",
                         "TargetEndpoint default response", "ProxyEndpoint default faults")));
+    }
+
+    @Test
+    void outlinesTheStepsOfSharedFlowsAndTheFilesOfPolicies() throws Exception {
+        List<Map<?, ?>> steps = new ArrayList<>();
+        Map<?, ?> outline = (Map<?, ?>) check(List.of()).get("outline");
+        for (Object lane : (List<?>) outline.get("lanes")) {
+            for (Object segment : (List<?>) ((Map<?, ?>) lane).get("segments")) {
+                ((List<?>) ((Map<?, ?>) segment).get("steps")).forEach(s -> steps.add((Map<?, ?>) s));
+            }
+        }
+        Map<?, ?> callout = steps.stream().filter(s -> "FC-Security".equals(s.get("policy"))).findFirst().orElseThrow();
+        Map<?, ?> called = (Map<?, ?>) callout.get("called");
+        assertEquals("sf-security", called.get("bundle"));
+        List<?> names = ((List<?>) called.get("steps")).stream().map(s -> ((Map<?, ?>) s).get("policy")).toList();
+        assertTrue(names.contains("LC-Token"), names.toString());
+
+        Map<?, ?> script = steps.stream().filter(s -> "JS-Format".equals(s.get("policy"))).findFirst().orElseThrow();
+        assertEquals(List.of("resources/jsc/format-order.js", "resources/jsc/common-utils.js"), script.get("resources"));
+        assertEquals(null, script.get("called"));
     }
 
     @Test

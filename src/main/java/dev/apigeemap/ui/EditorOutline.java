@@ -6,6 +6,7 @@ import dev.apigeemap.analysis.Xml;
 import dev.apigeemap.model.BundleReport;
 import dev.apigeemap.model.BundleType;
 import dev.apigeemap.model.Policy;
+import dev.apigeemap.model.SharedFlowLink;
 import org.w3c.dom.Element;
 
 import java.io.IOException;
@@ -28,9 +29,18 @@ record EditorOutline(List<Lane> lanes, List<PolicyEntry> policies, List<Variable
     record Unset(String name, String why) {
     }
 
-    /** A step of a flow; {@code file} is null when no policy has that name. */
+    /** The steps of a shared flow, whose files are in {@code bundle}. */
+    record Called(String bundle, List<Step> steps) {
+    }
+
+    /**
+     * A step of a flow; {@code file} is null when no policy has that name.
+     *
+     * @param resources the files of the bundle the policy uses, such as its scripts
+     * @param called    what a FlowCallout runs; null for other policies and for a shared flow that is not resolved
+     */
     record Step(String policy, String type, String file, boolean enabled, String condition, SourceMap.Span span,
-                List<Unset> unset) {
+                List<Unset> unset, List<String> resources, Called called) {
     }
 
     /**
@@ -115,6 +125,57 @@ record EditorOutline(List<Lane> lanes, List<PolicyEntry> policies, List<Variable
         return List.copyOf(variables.values());
     }
 
+    private static Step step(BundleReport report, Map<String, Policy> policies, Element step, List<Unset> unset)
+            throws IOException {
+        String name = Xml.text(step, "Name");
+        String condition = Xml.text(step, "Condition");
+        Policy policy = policies.get(name);
+        if (policy == null) {
+            return new Step(name, null, null, false, condition, SourceMap.spanOf(step), unset, List.of(), null);
+        }
+        Element root = Xml.parse(Path.of(report.path()).resolve(policy.file()));
+        return new Step(name, policy.type(), policy.file(), policy.enabled(), condition, SourceMap.spanOf(step), unset,
+                resources(root), called(report, root));
+    }
+
+    /** {@code jsc://file.js} is the file resources/jsc/file.js. */
+    private static List<String> resources(Element policy) {
+        List<Element> urls = new ArrayList<>(Xml.children(policy, "ResourceURL"));
+        urls.addAll(Xml.children(policy, "IncludeURL"));
+        List<String> files = new ArrayList<>();
+        for (Element url : urls) {
+            String value = Xml.text(url);
+            int separator = value == null ? -1 : value.indexOf("://");
+            if (separator > 0) {
+                files.add("resources/" + value.substring(0, separator) + "/" + value.substring(separator + 3));
+            }
+        }
+        return files;
+    }
+
+    private static Called called(BundleReport report, Element policy) throws IOException {
+        if (!policy.getTagName().equals("FlowCallout")) return null;
+        String name = Xml.text(policy, "SharedFlowBundle");
+        for (SharedFlowLink link : report.sharedFlows()) {
+            if (link.name().equals(name) && link.report() != null) {
+                return new Called(link.report().name(), steps(link.report()));
+            }
+        }
+        return null;
+    }
+
+    private static List<Step> steps(BundleReport sharedFlow) throws IOException {
+        Map<String, Policy> policies = new HashMap<>();
+        sharedFlow.policies().forEach(p -> policies.put(p.name(), p));
+        List<Step> steps = new ArrayList<>();
+        for (Path file : Xml.xmlFiles(Path.of(sharedFlow.path()).resolve("sharedflows"))) {
+            for (Element step : Xml.children(Xml.parse(file), "Step")) {
+                steps.add(step(sharedFlow, policies, step, List.of()));
+            }
+        }
+        return steps;
+    }
+
     /** Reads the endpoints of a bundle into lanes, in the order {@link VariableFlow} runs them. */
     private static final class Lanes {
 
@@ -195,7 +256,7 @@ record EditorOutline(List<Lane> lanes, List<PolicyEntry> policies, List<Variable
             return endpoints;
         }
 
-        private List<Segment> phase(Endpoint endpoint, String phase) {
+        private List<Segment> phase(Endpoint endpoint, String phase) throws IOException {
             List<Segment> segments = new ArrayList<>();
             Element preFlow = Xml.path(endpoint.root(), "PreFlow");
             if (Xml.path(preFlow, phase) == null) {
@@ -224,7 +285,7 @@ record EditorOutline(List<Lane> lanes, List<PolicyEntry> policies, List<Variable
             return segments;
         }
 
-        private List<Segment> faults(Endpoint endpoint) {
+        private List<Segment> faults(Endpoint endpoint) throws IOException {
             List<Segment> segments = new ArrayList<>();
             for (Element rule : Xml.children(Xml.path(endpoint.root(), "FaultRules"), "FaultRule")) {
                 segment(segments, endpoint, rule, Xml.nameOf(rule), Xml.text(rule, "Condition"),
@@ -238,15 +299,12 @@ record EditorOutline(List<Lane> lanes, List<PolicyEntry> policies, List<Variable
 
         /** @param location the {@link VariableFlow.Step#location} of its steps */
         private void segment(List<Segment> segments, Endpoint endpoint, Element holder, String label, String condition,
-                             String location) {
+                             String location) throws IOException {
             if (holder == null) return;
             List<Step> steps = new ArrayList<>();
             for (Element step : Xml.children(holder, "Step")) {
                 String name = Xml.text(step, "Name");
-                Policy policy = policies.get(name);
-                steps.add(new Step(name, policy == null ? null : policy.type(), policy == null ? null : policy.file(),
-                        policy != null && policy.enabled(), Xml.text(step, "Condition"), SourceMap.spanOf(step),
-                        unset.getOrDefault(key(location, name), List.of())));
+                steps.add(EditorOutline.step(report, policies, step, unset.getOrDefault(key(location, name), List.of())));
             }
             segments.add(new Segment(label, condition, endpoint.file(), holder.getTagName(), SourceMap.spanOf(holder),
                     steps, null));

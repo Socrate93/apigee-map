@@ -210,7 +210,7 @@ table.tests .purpose { color: var(--fg); margin: 2px 0; }
 .login-fields { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .login-fields[hidden] { display: none; }
 
-.editor-page { display: grid; grid-template-rows: auto minmax(0, 1fr) 190px; height: calc(100vh - 52px); }
+.editor-page { display: grid; grid-template-rows: auto minmax(0, 1fr) 225px; height: calc(100vh - 52px); }
 .editor-head { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: var(--card); border-bottom: 1px solid var(--line); }
 .editor-head .meta { margin: 0; }
 .editor-head .spacer { flex: 1; }
@@ -246,17 +246,40 @@ table.tests .purpose { color: var(--fg); margin: 2px 0; }
 .editor-tab.on { background: var(--card); }
 .editor-tab.on button { color: var(--fg); }
 .editor-host { min-height: 0; overflow: hidden; }
-.editor-problems { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; background: var(--card); border-top: 1px solid var(--line); }
+.editor-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; background: var(--card); border-top: 1px solid var(--line); }
+.editor-panel-body { display: grid; grid-template-rows: minmax(0, 1fr); min-height: 0; min-width: 0; }
+.editor-panel-body > [hidden] { display: none; }
+.editor-problems { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; }
 .editor-problems-head { display: flex; align-items: center; gap: 12px; padding: 6px 16px; border-bottom: 1px solid var(--line); }
 .editor-problems-list { overflow-y: auto; padding: 2px 8px; }
 .editor-problems-list .meta { padding: 8px; }
 .editor-page.simulating { grid-template-rows: auto minmax(0, 1fr) 46vh; }
+.editor-page.no-panel { grid-template-rows: auto minmax(0, 1fr) auto; }
 .editor-file.deleted .name { text-decoration: line-through; }
-.editor-panel-tabs { display: flex; gap: 12px; }
-.editor-panel-tabs .link { color: var(--muted); font-weight: 600; }
-.editor-panel-tabs .link.on { color: var(--fg); }
-.editor-simulate { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; background: var(--card); border-top: 1px solid var(--line); }
-.editor-simulate[hidden], .editor-problems[hidden] { display: none; }
+.editor-panel-tabs { display: flex; }
+.editor-panel-tabs .badge { margin-left: 6px; }
+.editor-panel-closed { display: flex; align-items: center; gap: 12px; margin-left: auto; padding: 0 12px; white-space: nowrap; }
+.editor-panel-closed .link { color: var(--muted); font-size: 12px; }
+.editor-outline-table { font-size: 12px; }
+.editor-outline-table th, .editor-outline-table td { padding: 3px 8px; }
+.editor-outline-table td .link { margin-right: 8px; font-size: 12px; }
+.editor-graph { overflow: auto; }
+.editor-graph svg { display: block; }
+.editor-graph text { fill: var(--muted); font-size: 11px; pointer-events: none; }
+.editor-graph text.strong { fill: var(--fg); font-weight: 600; }
+.editor-graph .shared { fill: var(--soft); stroke: var(--line); }
+.editor-graph .edge { fill: none; stroke: var(--line); stroke-width: 1.5; }
+.editor-graph .link .edge { stroke: var(--muted); stroke-dasharray: 4 3; }
+.editor-graph .link:hover .edge, .editor-graph .link:focus-within .edge { stroke: var(--accent); }
+.editor-graph .hit { fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; outline: none; }
+.editor-graph .node { fill: var(--card); stroke: var(--muted); stroke-width: 1.5; cursor: pointer; outline: none; }
+.editor-graph .node:hover, .editor-graph .node:focus-visible { fill: var(--accent-soft); stroke: var(--accent); }
+.editor-graph .node.conditional { stroke-dasharray: 3 2; }
+.editor-graph .node.off { opacity: .45; }
+.editor-graph .node.missing { stroke: var(--err); }
+.editor-graph .node.on { fill: var(--accent); stroke: var(--accent); }
+.editor-graph-tip { position: fixed; z-index: 15; max-width: 360px; padding: 4px 8px; border-radius: 6px; background: var(--fg); color: var(--bg); font-size: 12px; overflow-wrap: anywhere; pointer-events: none; transform: translate(-50%, -100%); }
+.editor-graph-tip[hidden] { display: none; }
 .editor-sim-body { display: grid; grid-template-columns: 420px minmax(0, 1fr); min-height: 0; }
 .editor-sim-form { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; align-content: start; overflow-y: auto; padding: 8px 16px; border-right: 1px solid var(--line); font-size: 12px; }
 .editor-sim-form label { display: grid; gap: 2px; min-width: 0; }

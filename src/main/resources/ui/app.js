@@ -1492,7 +1492,8 @@ function loadMonaco() {
     script.src = '/assets/monaco/vs/loader.js';
     script.onerror = () => reject(new Error('The code editor could not be loaded'));
     script.onload = () => {
-      window.require.config({paths: {vs: '/assets/monaco/vs'}});
+      // Absolute: Monaco starts its workers from a blob, where a path alone cannot be resolved.
+      window.require.config({paths: {vs: location.origin + '/assets/monaco/vs'}});
       window.require(['vs/editor/editor.main'], () => resolve(window.monaco), reject);
     };
     document.head.append(script);
@@ -1506,6 +1507,110 @@ function fileKey(bundle, path) {
 
 function worst(problems) {
   return SEVERITIES.find(s => problems.some(p => p.severity === s));
+}
+
+const GRAPH = {step: 22, row: 24, label: 15, char: 6.2, gap: 18, fork: 16, indent: 14, radius: 6, padding: 6};
+
+const graphSeq = (children, gap = GRAPH.gap) => ({kind: 'seq', children, gap});
+const graphPar = children => ({kind: 'par', children});
+/** @param link what the line entering this part says: {title, condition}, when it depends on a condition */
+const graphLabeled = (inner, label, strong, link) => ({kind: 'labeled', inner, label, strong, link});
+
+/** Sets the size of a part of the usage graph and its anchor: the height at which the flow enters and leaves it. */
+function graphMeasure(part) {
+  const {children = []} = part;
+  children.forEach(graphMeasure);
+  if (part.kind === 'step') {
+    if (part.sub) graphMeasure(part.sub);
+    part.lead = part.link ? GRAPH.fork : 0;
+    part.w = GRAPH.step + part.lead;
+    if (part.sub) part.w = Math.max(part.w, part.lead + GRAPH.indent + part.sub.w);
+    part.h = GRAPH.row + (part.sub?.h || 0);
+    part.anchor = GRAPH.row / 2;
+  } else if (part.kind === 'seq') {
+    part.anchor = Math.max(...children.map(c => c.anchor));
+    part.h = part.anchor + Math.max(...children.map(c => c.h - c.anchor));
+    part.w = children.reduce((sum, c) => sum + c.w, part.gap * (children.length - 1));
+  } else if (part.kind === 'par') {
+    part.anchor = children[0].anchor;
+    part.h = children.reduce((sum, c) => sum + c.h, 0);
+    part.w = Math.max(...children.map(c => c.w)) + 2 * GRAPH.fork;
+  } else if (part.kind === 'labeled') {
+    graphMeasure(part.inner);
+    part.anchor = part.inner.anchor + GRAPH.label;
+    part.h = part.inner.h + GRAPH.label;
+    part.w = Math.max(part.inner.w, part.label.length * GRAPH.char + 6);
+  } else if (part.kind === 'shared') {
+    graphMeasure(part.inner);
+    part.anchor = part.inner.anchor + GRAPH.padding;
+    part.h = part.inner.h + 2 * GRAPH.padding;
+    part.w = part.inner.w + 2 * GRAPH.padding;
+  } else {
+    part.anchor = 0;
+    part.h = children.reduce((sum, c) => sum + c.h + GRAPH.label, 0);
+    part.w = Math.max(...children.map(c => c.w));
+  }
+}
+
+/** Places a measured part at (x, y): its line runs from x to x + w at its anchor. */
+function graphPlace(part, x, y, out) {
+  const line = y + part.anchor;
+  const curve = (x1, y1, x2, y2) => 'M' + x1 + ' ' + y1 + 'C' + (x1 + x2) / 2 + ' ' + y1 + ' ' + (x1 + x2) / 2 + ' ' + y2 + ' ' + x2 + ' ' + y2;
+  const straight = (x1, x2, at) => x2 > x1 ? 'M' + x1 + ' ' + at + 'H' + x2 : '';
+  const draw = (d, link) => {
+    if (d && link) out.links.push({...link, d});
+    else out.edges.push(d);
+  };
+  if (part.kind === 'step') {
+    const center = x + part.lead + GRAPH.step / 2;
+    draw(straight(x, center, line), part.link);
+    draw(straight(center, x + part.w, line));
+    out.nodes.push({...part, x: center, y: line});
+    if (part.sub) {
+      const subX = x + part.lead + GRAPH.indent;
+      const subY = y + GRAPH.row;
+      draw('M' + center + ' ' + line + 'V' + (subY + part.sub.anchor) + 'H' + subX);
+      graphPlace(part.sub, subX, subY, out);
+    }
+  } else if (part.kind === 'seq') {
+    let at = x;
+    part.children.forEach((child, i) => {
+      if (i) draw(straight(at, at + part.gap, line), child.link);
+      if (i) at += part.gap;
+      graphPlace(child, at, y + part.anchor - child.anchor, out);
+      at += child.w;
+    });
+  } else if (part.kind === 'par') {
+    let at = y;
+    for (const child of part.children) {
+      const branch = at + child.anchor;
+      const end = x + part.w - GRAPH.fork;
+      draw(curve(x, line, x + GRAPH.fork, branch) + straight(x + GRAPH.fork + child.w, end, branch) + curve(end, branch, x + part.w, line), child.link);
+      graphPlace(child, x + GRAPH.fork, at, out);
+      at += child.h;
+    }
+  } else if (part.kind === 'labeled') {
+    out.labels.push({text: part.label, strong: part.strong, x: x + 2, y: y + GRAPH.label - 4});
+    graphPlace(part.inner, x, y + GRAPH.label, out);
+    draw(straight(x + part.inner.w, x + part.w, line));
+  } else if (part.kind === 'shared') {
+    out.boxes.push({x, y, w: part.w, h: part.h});
+    draw(straight(x, x + GRAPH.padding, line));
+    graphPlace(part.inner, x + GRAPH.padding, y + GRAPH.padding, out);
+  } else {
+    let at = y;
+    for (const child of part.children) {
+      graphPlace(child, x, at, out);
+      at += child.h + GRAPH.label;
+    }
+  }
+}
+
+function svg(tag, attrs, ...children) {
+  const element = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, value);
+  element.append(...children);
+  return element;
 }
 
 async function editorView(id, isCurrent) {
@@ -1525,7 +1630,12 @@ async function editorView(id, isCurrent) {
   let checks = 0;
   let saving = false;
   let outline = null;
+  /** The tab shown in the bottom panel, null when all are closed, and the tabs open there. */
   let panel = 'problems';
+  const openPanels = ['problems', 'simulate'];
+  let variablesShown = 'all';
+  /** The file the usage graph last scrolled to. */
+  let usageShown = null;
   /** What the last simulated call did at each step of the proxy, by policy, until the text changes. */
   let simulated = new Map();
   const disposables = [];
@@ -1543,7 +1653,21 @@ async function editorView(id, isCurrent) {
   const problemsHead = h('div', {class: 'editor-problems-head'});
   const problemsList = h('div', {class: 'editor-problems-list'});
   const problemsPanel = h('div', {class: 'editor-problems'}, problemsHead, problemsList);
-  const simulatePanel = simulationPanel();
+  const variablesHead = h('div', {class: 'editor-problems-head'});
+  const variablesList = h('div', {class: 'editor-problems-list'});
+  const policiesList = h('div', {class: 'editor-problems-list'});
+  const usageHead = h('div', {class: 'editor-problems-head meta'});
+  const usageGraph = h('div', {class: 'editor-graph'});
+  const usageTip = h('div', {class: 'editor-graph-tip', hidden: true});
+  const panels = [
+    {key: 'problems', title: 'Problems', element: problemsPanel},
+    {key: 'simulate', title: 'Simulate', element: simulationPanel()},
+    {key: 'variables', title: 'Variables', element: h('div', {class: 'editor-problems'}, variablesHead, variablesList)},
+    {key: 'policies', title: 'Policies', element: policiesList},
+    {key: 'usage', title: 'Usage', element: h('div', {class: 'editor-problems'}, usageHead, usageGraph)},
+  ];
+  const panelBar = h('div', {class: 'editor-tabs'});
+  const panelBody = h('div', {class: 'editor-panel-body'}, panels.map(p => p.element));
 
   const editor = monaco.editor.create(host, {
     automaticLayout: true, minimap: {enabled: false}, fontSize: 13, scrollBeyondLastLine: false, model: null,
@@ -1615,7 +1739,6 @@ async function editorView(id, isCurrent) {
     const here = all.filter(p => file && p.bundle === file.bundle && p.file === file.path);
     const shown = scope === 'file' ? here : [...all, ...general];
     problemsHead.replaceChildren(
-      panelTabs(),
       chips([['all', 'All ' + (all.length + general.length)], ['file', 'This file ' + here.length]], scope, value => {
         scope = value || 'all';
         renderProblems();
@@ -1644,16 +1767,229 @@ async function editorView(id, isCurrent) {
     }
   }
 
-  function panelTabs() {
-    return h('div', {class: 'editor-panel-tabs', role: 'tablist'}, [['problems', 'Problems'], ['simulate', 'Simulate']].map(([value, title]) =>
-      h('button', {type: 'button', role: 'tab', class: 'link' + (panel === value ? ' on' : ''), 'aria-selected': String(panel === value), onclick: () => {
-        panel = value;
-        problemsPanel.hidden = value !== 'problems';
-        simulatePanel.hidden = value !== 'simulate';
-        pageElement?.classList.toggle('simulating', value === 'simulate');
-        renderProblems();
-        simulatePanel.querySelector('.editor-panel-tabs')?.replaceWith(panelTabs());
-      }}, title)));
+  function renderPanels() {
+    const count = problems().length + general.length;
+    panelBar.replaceChildren(
+      h('div', {class: 'editor-panel-tabs', role: 'tablist'}, openPanels.map(key => {
+        const {title} = panels.find(p => p.key === key);
+        return h('div', {class: 'editor-tab' + (key === panel ? ' on' : ''), role: 'tab', 'aria-selected': String(key === panel)},
+          h('button', {type: 'button', class: 'link', onclick: () => showPanel(key)}, title,
+            key === 'problems' && count ? h('span', {class: 'badge'}, count) : null),
+          h('button', {type: 'button', class: 'link', 'aria-label': 'Close ' + title, onclick: () => closePanel(key)}, '×'));
+      })),
+      h('div', {class: 'editor-panel-closed'}, panels.filter(p => !openPanels.includes(p.key)).map(p =>
+        h('button', {type: 'button', class: 'link', onclick: () => showPanel(p.key)}, '+ ' + p.title))));
+    panels.forEach(p => { p.element.hidden = p.key !== panel; });
+    pageElement?.classList.toggle('simulating', panel === 'simulate');
+    pageElement?.classList.toggle('no-panel', !panel);
+  }
+
+  function showPanel(key) {
+    if (!openPanels.includes(key)) openPanels.push(key);
+    panel = key;
+    renderPanels();
+    if (key === 'usage') revealUsage();
+  }
+
+  function revealUsage() {
+    usageGraph.querySelector('.on')?.scrollIntoView({block: 'nearest', inline: 'center'});
+  }
+
+  /** The parts of the graph for steps: a dot each, with the steps of a shared flow hanging under its FlowCallout. */
+  function usageSteps(steps, bundle, used, segment) {
+    return steps.map(step => {
+      const called = step.called?.steps.length ? step.called : null;
+      return {kind: 'step', step, bundle, segment, on: used(step, bundle), link: step.condition ? {title: step.policy, condition: step.condition} : null,
+        sub: called ? {kind: 'shared', inner: graphLabeled(graphSeq(usageSteps(called.steps, called.bundle, used), 0), called.bundle)} : null};
+    });
+  }
+
+  /** A lane as a chain: conditional Flows are branches, as only the first that matches runs. */
+  function usageLane(lane, used, file) {
+    const parts = [];
+    let branches = [];
+    const flush = () => {
+      if (branches.length) parts.push(graphPar(branches));
+      branches = [];
+    };
+    for (const segment of lane.segments.filter(s => s.steps.length)) {
+      const inFile = step => used(step, root) || (file?.bundle === root && file.path === segment.file);
+      const part = graphLabeled(graphSeq(usageSteps(segment.steps, root, (step, bundle) => bundle === root ? inFile(step) : used(step, bundle), segment), 0), segment.label, false,
+        segment.condition ? {title: segment.label, condition: segment.condition} : null);
+      if (['PreFlow', 'PostFlow', 'PostClientFlow'].includes(segment.label)) {
+        flush();
+        parts.push(part);
+      } else {
+        branches.push(part);
+      }
+    }
+    flush();
+    return parts.length ? graphSeq(parts) : null;
+  }
+
+  /** The proxy from the request to the response, then what runs on a fault; a shared flow has one chain per flow. */
+  function usageTree(used, file) {
+    const chains = [];
+    const others = [];
+    for (const lane of outline.lanes) {
+      const [, type, name, phase] = lane.title.match(/^(\S+) (.+) (request|response|routes|faults)$/) || [];
+      const part = usageLane(lane, used, file);
+      if (!part) continue;
+      if (!type) others.push(graphLabeled(part, lane.title, true));
+      else if (phase === 'faults') others.push(graphLabeled(part, name + ' faults', true));
+      else chains.push({type, name, phase, part});
+    }
+    const parallel = list => list.length > 1 ? graphPar(list) : list[0];
+    const proxies = phase => parallel(chains.filter(c => c.type === 'ProxyEndpoint' && c.phase === phase)
+      .map(c => graphLabeled(c.part, c.name + ' ' + phase, true)));
+    const targets = chains.filter(c => c.type === 'TargetEndpoint');
+    const routes = outline.lanes.filter(l => l.title.endsWith(' routes')).flatMap(l => l.segments);
+    const main = [proxies('request'),
+      parallel([...new Set(targets.map(c => c.name))].map(name => {
+        const route = routes.find(r => r.label.endsWith(' → ' + name) && r.condition);
+        return graphLabeled(graphSeq(targets.filter(c => c.name === name).map(c => c.part)), 'target ' + name, true,
+          route ? {title: 'Route ' + route.label, condition: route.condition} : null);
+      })),
+      proxies('response')].filter(Boolean);
+    return {kind: 'stack', children: [...(main.length ? [graphSeq(main, 2 * GRAPH.gap)] : []), ...others]};
+  }
+
+  function renderUsage() {
+    usageTip.hidden = true;
+    const file = active && opened.get(active);
+    if (!outline) {
+      usageHead.replaceChildren('The graph shows once the proxy can be analyzed.');
+      usageGraph.replaceChildren();
+      return;
+    }
+    const sharedSteps = file?.path.startsWith('sharedflows/');
+    const used = (step, bundle) => !!file && bundle === file.bundle
+      && (step.file === file.path || step.resources.includes(file.path) || sharedSteps);
+    const tree = usageTree(used, file);
+    if (!tree.children.length) {
+      usageHead.replaceChildren('No flow has a step.');
+      usageGraph.replaceChildren();
+      return;
+    }
+    graphMeasure(tree);
+    const out = {boxes: [], edges: [], links: [], nodes: [], labels: []};
+    graphPlace(tree, 8, 4, out);
+    const uses = out.nodes.filter(n => n.on).length;
+    const name = file ? file.path.slice(file.path.lastIndexOf('/') + 1) : null;
+    const policyFile = file && /^policies\//.test(file.path);
+    usageHead.replaceChildren(!file ? 'Open a policy to see where it runs.'
+      : uses ? name + ': ' + uses + (uses === 1 ? ' step' : ' steps')
+      : policyFile ? name + ': not attached to a flow' : name + ': no step uses this file');
+    usageGraph.replaceChildren(svg('svg', {width: tree.w + 16, height: tree.h + 8, role: 'group', 'aria-label': 'Flow steps'},
+      ...out.boxes.map(b => svg('rect', {class: 'shared', x: b.x, y: b.y, width: b.w, height: b.h, rx: 6})),
+      svg('path', {class: 'edge', d: out.edges.join('')}),
+      ...out.links.map(usageLink),
+      ...out.labels.map(l => svg('text', {class: l.strong ? 'strong' : '', x: l.x, y: l.y}, l.text)),
+      ...out.nodes.map(usageNode)));
+    if (usageShown !== active) {
+      usageShown = active;
+      if (panel === 'usage') revealUsage();
+    }
+  }
+
+  /** Shows the tooltip above a place of the page. */
+  function showTip(x, y, content) {
+    usageTip.replaceChildren(content);
+    usageTip.style.left = Math.max(120, Math.min(x, innerWidth - 120)) + 'px';
+    usageTip.style.top = y - 6 + 'px';
+    usageTip.hidden = false;
+  }
+
+  /** Shows the tooltip when the pointer or the focus is on an element of the graph. */
+  function withTip(element, content) {
+    const atElement = event => {
+      const place = element.getBoundingClientRect();
+      showTip(event.clientX ?? place.left + place.width / 2, place.top, content());
+    };
+    const hide = () => { usageTip.hidden = true; };
+    element.addEventListener('pointerenter', atElement);
+    element.addEventListener('pointerleave', hide);
+    element.addEventListener('focus', atElement);
+    element.addEventListener('blur', hide);
+    return element;
+  }
+
+  /** A line that is only followed on a condition: dashed, with a wider area to hover than what is drawn. */
+  function usageLink(link) {
+    const content = () => h('div', {}, h('strong', {}, link.title), h('div', {class: 'mono'}, 'If ' + link.condition));
+    return svg('g', {class: 'link'}, svg('path', {class: 'edge', d: link.d}),
+      withTip(svg('path', {class: 'hit', d: link.d, tabindex: 0, role: 'img', 'aria-label': link.title + ', if ' + link.condition}), content));
+  }
+
+  function usageNode(node) {
+    const {step, bundle, segment} = node;
+    const openStep = () => {
+      if (step.file) open(bundle, step.file, bundle === root);
+      else if (segment) open(root, segment.file, true, step.span);
+    };
+    const content = () => h('div', {}, h('strong', {}, step.policy),
+      h('div', {}, step.file ? step.type + (step.enabled ? '' : ', disabled') : 'No policy has this name'),
+      bundle === root ? null : h('div', {}, 'In ' + bundle),
+      step.condition ? h('div', {class: 'mono'}, 'If ' + step.condition) : null);
+    const element = withTip(svg('circle', {cx: node.x, cy: node.y, r: node.on ? GRAPH.radius + 1 : GRAPH.radius, tabindex: 0, role: 'button', 'aria-label': step.policy,
+      class: 'node' + (node.on ? ' on' : '') + (step.condition ? ' conditional' : '') + (step.enabled ? '' : ' off') + (step.file ? '' : ' missing')}), content);
+    element.addEventListener('click', openStep);
+    element.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      openStep();
+    });
+    return element;
+  }
+
+  function closePanel(key) {
+    const at = openPanels.indexOf(key);
+    openPanels.splice(at, 1);
+    if (panel === key) panel = openPanels[Math.min(at, openPanels.length - 1)] ?? null;
+    renderPanels();
+  }
+
+  function useLinks(uses) {
+    const steps = [...new Map(uses.map(u => [u.policy, u])).values()];
+    return steps.map(u => u.file
+      ? h('button', {type: 'button', class: 'link', title: u.location, onclick: () => open(root, u.file, true)}, u.policy)
+      : h('span', {title: u.location}, u.policy));
+  }
+
+  function renderVariables() {
+    const toCheck = v => v.readBy.some(u => READ_PROBLEMS.includes(u.source));
+    const all = outline?.variables || [];
+    const shown = all.filter(v => variablesShown === 'all' || toCheck(v));
+    variablesHead.replaceChildren(
+      chips([['all', 'All ' + all.length], ['check', 'To check ' + all.filter(toCheck).length]], variablesShown, value => {
+        variablesShown = value;
+        renderVariables();
+      }));
+    if (!shown.length) {
+      variablesList.replaceChildren(h('p', {class: 'meta'}, outline ? 'Nothing to report.' : 'The variables show once the proxy can be analyzed.'));
+      return;
+    }
+    variablesList.replaceChildren(h('table', {class: 'editor-outline-table'},
+      h('thead', {}, h('tr', {}, h('th', {}, 'Variable'), h('th', {}, 'Set by'), h('th', {}, 'Read by'))),
+      h('tbody', {}, shown.map(v => h('tr', {},
+        h('td', {class: 'mono'}, toCheck(v) ? h('span', {class: 'badge warn'}, 'check') : null, ' ', v.name),
+        h('td', {}, useLinks(v.setBy)),
+        h('td', {}, useLinks(v.readBy)))))));
+  }
+
+  function renderPolicies() {
+    const all = [...(outline?.policies || [])].sort((a, b) => (a.order < 0) - (b.order < 0) || a.order - b.order);
+    if (!all.length) {
+      policiesList.replaceChildren(h('p', {class: 'meta'}, outline ? 'This proxy has no policy.' : 'The policies show once the proxy can be analyzed.'));
+      return;
+    }
+    policiesList.replaceChildren(h('table', {class: 'editor-outline-table'},
+      h('thead', {}, h('tr', {}, h('th', {}, 'Policy'), h('th', {}, 'Type'), h('th', {}, 'Attached to'))),
+      h('tbody', {}, all.map(p => h('tr', {},
+        h('td', {}, h('button', {type: 'button', class: 'link', onclick: () => open(root, p.file, true)}, p.name),
+          p.enabled ? null : h('span', {class: 'badge'}, 'disabled')),
+        h('td', {}, p.type),
+        h('td', {}, p.attachments.length ? p.attachments.join(', ') : h('span', {class: 'badge warn'}, 'not attached')))))));
   }
 
   /** "name: value" or "name=value" lines as an object. */
@@ -1721,10 +2057,7 @@ async function editorView(id, isCurrent) {
       field('Request headers', headers), field('Request body', body),
       field('Target status', status), field('Target body', targetBody),
       field('Variables set from outside', variables), field('Policies to fail', failing));
-    const panelElement = h('div', {class: 'editor-simulate', hidden: true},
-      h('div', {class: 'editor-problems-head'}, h('div', {class: 'editor-panel-tabs'})),
-      h('div', {class: 'editor-sim-body'}, form, result));
-    return panelElement;
+    return h('div', {class: 'editor-sim-body'}, form, result);
   }
 
   function renderRail() {
@@ -1763,6 +2096,10 @@ async function editorView(id, isCurrent) {
     renderTree();
     renderTabs();
     renderProblems();
+    renderVariables();
+    renderPolicies();
+    renderUsage();
+    renderPanels();
     renderMarkers();
     renderRail();
     saveButton.disabled = !dirty().length;
@@ -2335,7 +2672,7 @@ async function editorView(id, isCurrent) {
       h('span', {class: 'spacer'}),
       composeButton, renameButton, newPolicyButton, saveButton),
     h('div', {class: 'editor-body'}, tree, h('div', {class: 'editor-main'}, tabBar, host), rail),
-    problemsPanel, simulatePanel);
+    h('section', {class: 'editor-panel', 'aria-label': 'Panel'}, panelBar, panelBody), usageTip);
 
   renderAll();
   const first = workspace.bundles[0].files.find(f => f.path === editorReturn)
