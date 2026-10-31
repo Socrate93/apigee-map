@@ -19,6 +19,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -203,6 +204,22 @@ public final class VariableFlow {
         Set<String> fields = FIELDS.get(parts[0]);
         if (fields != null) return parts.length == 1 || fields.contains(parts[1]);
         return BUILT_IN.contains(parts[0]);
+    }
+
+    /**
+     * What Apigee sets whatever the steps of the bundle, by first segment, with the second segments it sets there;
+     * none when they are not known.
+     */
+    public static Map<String, Set<String>> builtIns() {
+        Map<String, Set<String>> builtIns = new TreeMap<>();
+        BUILT_IN.forEach(first -> builtIns.put(first, Set.of()));
+        builtIns.putAll(FIELDS);
+        return builtIns;
+    }
+
+    /** First segments of the variables a policy sets under its own name, in lower case. */
+    public static Set<String> policyScopes() {
+        return POLICY_SCOPED;
     }
 
     /** {@code <policy type>.<policy name>.<field>}: a variable the named policy sets when it runs. */

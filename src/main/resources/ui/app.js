@@ -89,6 +89,7 @@ const api = {
     + '&bundle=' + encodeURIComponent(bundle) + '&path=' + encodeURIComponent(path)),
   editorCheck: (id, buffers) => request('POST', '/api/editor/check?id=' + encodeURIComponent(id), {buffers}),
   editorSave: (id, files) => request('POST', '/api/editor/save?id=' + encodeURIComponent(id), {files}),
+  editorRename: (id, change) => request('POST', '/api/editor/rename?id=' + encodeURIComponent(id), change),
 };
 
 function stepQuery(id, bundle, step) {
@@ -1395,6 +1396,8 @@ function mapPanel(id) {
 /** How long typing has to pause before what was typed is checked. */
 const CHECK_DELAY = 500;
 const LANGUAGES = {xml: 'xml', xsl: 'xml', xslt: 'xml', xsd: 'xml', wsdl: 'xml', js: 'javascript', py: 'python', json: 'json'};
+/** A file to show when the page comes back after a rename. */
+let editorReturn = null;
 let monacoLoad = null;
 
 function loadMonaco() {
@@ -1435,9 +1438,14 @@ async function editorView(id, isCurrent) {
   let timer = null;
   let checks = 0;
   let saving = false;
+  let outline = null;
+  const disposables = [];
 
   const status = h('span', {class: 'meta'});
   const saveButton = h('button', {type: 'button', class: 'primary', onclick: save}, 'Save');
+  const newPolicyButton = h('button', {type: 'button', onclick: () => policyDialog(null)}, 'New policy');
+  const renameButton = h('button', {type: 'button', onclick: () => renameDialog(activePolicy()?.name)}, 'Rename policy');
+  const rail = h('aside', {class: 'editor-rail', 'aria-label': 'Flow'});
   const tree = h('nav', {class: 'editor-tree', 'aria-label': 'Files'});
   const tabBar = h('div', {class: 'editor-tabs', role: 'tablist'});
   const host = h('div', {class: 'editor-host'});
@@ -1449,6 +1457,15 @@ async function editorView(id, isCurrent) {
     theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'vs-dark' : 'vs',
   });
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, save);
+  editor.addCommand(monaco.KeyCode.F12, () => goToDefinition(editor.getModel(), editor.getPosition()));
+  editor.addCommand(monaco.KeyCode.F2, () => {
+    const token = tokenAt(editor.getModel(), editor.getPosition());
+    const policy = (token && outlinePolicy(token.text)) || activePolicy();
+    if (policy) renameDialog(policy.name);
+  });
+  disposables.push(editor.onMouseDown(event => {
+    if ((event.event.ctrlKey || event.event.metaKey) && event.target.position) goToDefinition(editor.getModel(), event.target.position);
+  }));
 
   const dirty = () => [...opened.values()].filter(f => f.model.getValue() !== f.base);
   const problems = () => [...syntax, ...findings];
@@ -1530,12 +1547,353 @@ async function editorView(id, isCurrent) {
     }
   }
 
+  function renderRail() {
+    if (!outline) {
+      rail.replaceChildren(h('p', {class: 'meta'}, 'The flow shows once the proxy can be analyzed.'));
+      return;
+    }
+    const all = problems();
+    const current = activePolicy();
+    rail.replaceChildren(...outline.lanes.map(lane => h('section', {},
+      h('h3', {}, lane.title),
+      lane.segments.map(segment => h('div', {class: 'editor-segment'},
+        h('div', {class: 'editor-segment-head'},
+          h('button', {type: 'button', class: 'link', title: segment.condition || 'Show in ' + segment.file,
+            onclick: () => open(root, segment.file, true, segment.span)}, segment.label),
+          segment.element ? h('button', {type: 'button', class: 'link', 'aria-label': 'Add a policy to ' + segment.label,
+            title: 'Add a policy here', onclick: () => policyDialog(segment)}, '+') : null),
+        segment.condition ? h('div', {class: 'mono editor-condition', title: segment.condition}, segment.condition) : null,
+        segment.steps.map(step => {
+          const here = all.filter(p => p.bundle === root && p.file === step.file);
+          const notes = step.unset.map(u => u.name + ': ' + u.why);
+          if (!step.file) notes.push('No policy has this name');
+          if (step.condition) notes.unshift('If ' + step.condition);
+          return h('button', {type: 'button', class: 'editor-step' + (step.policy === current?.name ? ' on' : '') + (step.enabled ? '' : ' off'),
+              title: notes.join('\n'), onclick: () => step.file ? open(root, step.file, true) : open(root, segment.file, true, step.span)},
+            h('span', {class: 'name'}, step.policy),
+            step.condition ? h('span', {class: 'badge'}, 'if') : null,
+            !step.file ? h('span', {class: 'badge bad'}, 'missing') : null,
+            step.unset.length ? h('span', {class: 'badge warn'}, step.unset.length + ' unset') : null,
+            here.length ? h('span', {class: 'badge ' + (worst(here) === 'ERROR' ? 'bad' : worst(here) === 'WARN' ? 'warn' : '')}, here.length) : null);
+        }))))));
+  }
+
   function renderAll() {
     renderTree();
     renderTabs();
     renderProblems();
     renderMarkers();
+    renderRail();
     saveButton.disabled = !dirty().length;
+    renameButton.disabled = !activePolicy();
+  }
+
+  function outlinePolicy(name) {
+    return outline?.policies.find(p => p.name === name);
+  }
+
+  /** The policy of the proxy in the active file. */
+  function activePolicy() {
+    const file = active && opened.get(active);
+    return file && file.bundle === root ? outline?.policies.find(p => p.file === file.path) : undefined;
+  }
+
+  /** The word under a position, with the dots and dashes of variable and policy names. */
+  function tokenAt(model, position) {
+    if (!model || !position) return null;
+    for (const match of model.getLineContent(position.lineNumber).matchAll(/[A-Za-z_][\w-]*(?:\.[\w*-]+)*/g)) {
+      const start = match.index + 1;
+      const end = start + match[0].length;
+      if (position.column >= start && position.column <= end) {
+        return {text: match[0], range: new monaco.Range(position.lineNumber, start, position.lineNumber, end)};
+      }
+    }
+    return null;
+  }
+
+  /** The entries of the outline that hold a variable: its own, or a family or a part it belongs to. */
+  function variableEntries(name) {
+    const wanted = name.toLowerCase();
+    return (outline?.variables || []).filter(v => {
+      const base = v.name.replace(/\.\*$/, '').toLowerCase();
+      return wanted === base || wanted.startsWith(base + '.');
+    });
+  }
+
+  function isBuiltIn(name) {
+    const [first, second] = name.toLowerCase().split('.');
+    const fields = workspace.builtIns[first];
+    return !!fields && (!second || !fields.length || fields.includes(second));
+  }
+
+  /** Where the policy of the model runs among the steps, or null when the text is not a policy that runs. */
+  function orderOf(model) {
+    const file = [...opened.values()].find(f => f.model === model);
+    const policy = file && file.bundle === root ? outline?.policies.find(p => p.file === file.path) : null;
+    return policy && policy.order >= 0 ? policy.order : null;
+  }
+
+  function usesText(uses) {
+    return [...new Map(uses.map(u => [u.policy + u.location, u])).values()].slice(0, 6)
+      .map(u => '- `' + u.policy + '`, ' + u.location);
+  }
+
+  function variableHover(model, name) {
+    const entries = variableEntries(name);
+    if (!entries.length && !(name.includes('.') && isBuiltIn(name))) return null;
+    const setBy = entries.flatMap(v => v.setBy);
+    const readBy = entries.flatMap(v => v.readBy);
+    const lines = ['**`' + name + '`**'];
+    if (isBuiltIn(name)) lines.push('Set by Apigee.');
+    if (setBy.length) lines.push('Set by:', ...usesText(setBy));
+    if (readBy.length) lines.push('Read by:', ...usesText(readBy));
+    const order = orderOf(model);
+    if (order !== null && !isBuiltIn(name) && !setBy.some(u => u.order < order)) {
+      lines.push(setBy.length ? 'Only later steps set it: it is null here.' : 'No step sets it: it is null here.');
+    }
+    return lines.join('\n\n');
+  }
+
+  async function goToDefinition(model, position) {
+    const token = tokenAt(model, position);
+    if (!token) return;
+    const policy = outlinePolicy(token.text);
+    if (policy) {
+      await open(root, policy.file, true);
+      return;
+    }
+    const order = orderOf(model);
+    const writers = variableEntries(token.text).flatMap(v => v.setBy.map(use => ({use, variable: v}))).filter(w => w.use.file);
+    const writer = writers.filter(w => order === null || w.use.order < order).at(-1) || writers[0];
+    if (!writer) return;
+    await open(root, writer.use.file, true);
+    const text = writer.variable.name.replace(/\.\*$/, '');
+    const {model: target} = opened.get(fileKey(root, writer.use.file));
+    const match = target.findMatches(text.slice(text.lastIndexOf('.') + 1), false, false, false, null, false)[0];
+    if (match) {
+      editor.setSelection(match.range);
+      editor.revealRangeInCenterIfOutsideViewport(match.range);
+    }
+  }
+
+  function variableItems(model, range) {
+    const order = orderOf(model);
+    const items = [];
+    for (const variable of outline?.variables || []) {
+      if (!variable.setBy.length) continue;
+      const earlier = order === null || variable.setBy.some(u => u.order < order);
+      const family = variable.name.endsWith('.*');
+      items.push({label: variable.name, kind: monaco.languages.CompletionItemKind.Variable, range,
+        insertText: family ? variable.name.slice(0, -1) : variable.name,
+        detail: (earlier ? 'Set by ' : 'Null here, set later by ') + variable.setBy[0].policy,
+        sortText: (earlier ? '0' : '2') + variable.name});
+    }
+    for (const [first, fields] of Object.entries(workspace.builtIns)) {
+      for (const name of [first, ...fields.map(f => first + '.' + f)]) {
+        items.push({label: name, kind: monaco.languages.CompletionItemKind.Field, range, insertText: name, detail: 'Apigee', sortText: '1' + name});
+      }
+    }
+    return items;
+  }
+
+  function provideCompletion(model, position) {
+    if (!outline) return {suggestions: []};
+    const before = model.getValueInRange(new monaco.Range(position.lineNumber, 1, position.lineNumber, position.column));
+    const typed = before.match(/[\w.*-]*$/)[0];
+    const range = new monaco.Range(position.lineNumber, position.column - typed.length, position.lineNumber, position.column);
+    const file = [...opened.values()].find(f => f.model === model);
+    if (!file) return {suggestions: []};
+    if (model.getLanguageId() === 'javascript') {
+      const inCall = /context\.(?:get|set|remove)Variable\(\s*["'][\w.*-]*$/.test(before);
+      return {suggestions: inCall ? variableItems(model, range) : []};
+    }
+    if (/<Name>\s*[\w-]*$/.test(before) && /^(proxies|targets)\//.test(file.path)) {
+      return {suggestions: outline.policies.map(p => ({label: p.name, kind: monaco.languages.CompletionItemKind.Function, range,
+        insertText: p.name, detail: p.type + (p.order < 0 ? ', not attached' : '')}))};
+    }
+    return {suggestions: /<[\w/-]*$/.test(before) ? [] : variableItems(model, range)};
+  }
+
+  disposables.push(...['xml', 'javascript'].map(language => monaco.languages.registerCompletionItemProvider(language, {
+    triggerCharacters: ['.', '{', '>', '"'], provideCompletionItems: provideCompletion})));
+  disposables.push(...['xml', 'javascript'].map(language => monaco.languages.registerHoverProvider(language, {
+    provideHover(model, position) {
+      const token = tokenAt(model, position);
+      if (!token || !outline) return null;
+      const policy = outlinePolicy(token.text);
+      const text = policy
+        ? ['**' + policy.name + '**, ' + policy.type + (policy.enabled ? '' : ' (disabled)'),
+          ...(policy.attachments.length ? policy.attachments.map(a => '- ' + a) : ['Not attached to a flow.'])].join('\n\n')
+        : variableHover(model, token.text);
+      return text ? {range: token.range, contents: [{value: text}]} : null;
+    }})));
+
+  /** Shows a file that is not saved yet, or that comes from the server. */
+  function addBuffer(bundle, path, editable, content, base) {
+    const key = fileKey(bundle, path);
+    const language = LANGUAGES[path.slice(path.lastIndexOf('.') + 1).toLowerCase()] || 'plaintext';
+    const model = monaco.editor.createModel(content, language);
+    opened.set(key, {bundle, path, editable, base, model});
+    model.onDidChangeContent(() => {
+      renderTree();
+      renderTabs();
+      saveButton.disabled = !dirty().length;
+      schedule();
+    });
+  }
+
+  function listFile(path) {
+    const files = workspace.bundles[0].files;
+    files.push({path, text: true});
+    files.sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  /** Adds a Step at the end of a segment, in the text of its file, where undo can take it back. */
+  function addStep(segment, name) {
+    const {model} = opened.get(fileKey(root, segment.file));
+    const start = model.getOffsetAt({lineNumber: segment.span.line, column: segment.span.column});
+    const text = model.getValue();
+    const tag = '<' + segment.element;
+    if (!text.startsWith(tag, start)) return false;
+    const close = text.indexOf('>', start);
+    const line = model.getLineContent(segment.span.line);
+    const indent = line.slice(0, line.length - line.trimStart().length);
+    const step = indent + '    <Step><Name>' + name + '</Name></Step>\n';
+    const edit = (from, to, inserted) => model.pushEditOperations([], [{
+      range: monaco.Range.fromPositions(model.getPositionAt(from), model.getPositionAt(to)), text: inserted}], () => null);
+    if (text[close - 1] === '/') {
+      const opening = text.slice(start, close - 1).trimEnd();
+      edit(start, close + 1, opening + '>\n' + step + indent + '</' + segment.element + '>');
+      return true;
+    }
+    const end = text.indexOf('</' + segment.element, close);
+    if (end < 0) return false;
+    const lineStart = text.lastIndexOf('\n', end) + 1;
+    const ownLine = !text.slice(lineStart, end).trim();
+    if (ownLine) edit(lineStart, lineStart, step);
+    else edit(end, end, '\n' + step + indent);
+    return true;
+  }
+
+  async function createPolicy(entry, name, segment) {
+    const path = 'policies/' + name + '.xml';
+    const fill = text => text.replaceAll('{{name}}', name);
+    addBuffer(root, path, true, fill(entry.template), null);
+    listFile(path);
+    if (entry.script !== null) {
+      const script = 'resources/jsc/' + name + '.js';
+      addBuffer(root, script, true, fill(entry.script), null);
+      listFile(script);
+    }
+    if (segment) {
+      await open(root, segment.file, true);
+      if (!addStep(segment, name)) toast('The flow changed: add the step by hand', true);
+    }
+    await open(root, path, true);
+    schedule();
+  }
+
+  function policyDialog(segment) {
+    const targets = (outline?.lanes || []).flatMap(lane => lane.segments.filter(s => s.element).map(s => ({lane, segment: s})));
+    const taken = () => [...workspace.bundles[0].files.map(f => f.path), ...opened.keys()];
+    let entry = workspace.catalog[0];
+    const search = h('input', {type: 'search', placeholder: 'Filter policies', 'aria-label': 'Filter policies', oninput: renderList});
+    const list = h('div', {class: 'editor-catalog'});
+    const name = h('input', {type: 'text', 'aria-label': 'Policy name', oninput: validate});
+    const attach = h('select', {'aria-label': 'Attach to'},
+      h('option', {value: ''}, 'Not attached yet'),
+      targets.map((t, i) => h('option', {value: String(i), selected: t.segment === segment}, t.lane.title + ' › ' + t.segment.label)));
+    const problem = h('p', {class: 'meta'});
+    const create = h('button', {type: 'button', class: 'primary', onclick: () => {
+      const target = attach.value === '' ? null : targets[Number(attach.value)].segment;
+      const chosen = entry;
+      const value = name.value;
+      dialog.close();
+      createPolicy(chosen, value, target);
+    }}, 'Create');
+    const dialog = h('dialog', {class: 'wide'},
+      h('h2', {}, 'New policy'), search, list,
+      h('div', {class: 'editor-form'}, h('label', {}, 'Name ', name), h('label', {}, 'Attach to ', attach)),
+      problem,
+      h('p', {class: 'meta'}, 'The policy stays in the editor until you save.'),
+      h('div', {class: 'actions'}, h('button', {type: 'button', onclick: () => dialog.close()}, 'Cancel'), create));
+    dialog.addEventListener('close', () => dialog.remove());
+
+    function renderList() {
+      const words = search.value.toLowerCase();
+      const shown = workspace.catalog.filter(e => (e.type + ' ' + e.summary + ' ' + e.group).toLowerCase().includes(words));
+      list.replaceChildren(...[...new Set(shown.map(e => e.group))].map(group => h('section', {},
+        h('h3', {}, group),
+        shown.filter(e => e.group === group).map(e => h('button', {type: 'button', class: 'editor-file' + (e === entry ? ' on' : ''), onclick: () => choose(e)},
+          h('span', {class: 'name'}, e.type), h('span', {class: 'meta'}, e.summary))))));
+    }
+
+    function choose(chosen) {
+      entry = chosen;
+      name.value = chosen.prefix + '-New';
+      renderList();
+      validate();
+    }
+
+    function validate() {
+      const value = name.value;
+      const message = !/^[A-Za-z0-9_-]+$/.test(value) ? 'A policy name uses letters, digits, - and _ only.'
+        : taken().some(p => p.endsWith('policies/' + value + '.xml')) || outlinePolicy(value) ? 'A policy already has this name.' : '';
+      problem.textContent = message;
+      create.disabled = !!message;
+    }
+
+    choose(entry);
+    document.body.append(dialog);
+    dialog.showModal();
+    search.focus();
+  }
+
+  function renameDialog(from) {
+    if (!from) return;
+    if (dirty().length) {
+      toast('Save your changes before renaming a policy', true);
+      return;
+    }
+    const to = h('input', {type: 'text', value: from, 'aria-label': 'New name', oninput: () => { plan = null; apply.disabled = true; preview.replaceChildren(); }});
+    const preview = h('div', {class: 'editor-rename'});
+    let plan = null;
+    const change = () => ({from, to: to.value.trim()});
+    const show = h('button', {type: 'button', onclick: async () => {
+      try {
+        plan = await api.editorRename(id, change());
+      } catch (error) {
+        toast(error.message, true);
+        return;
+      }
+      preview.replaceChildren(
+        ...plan.files.map(file => h('section', {},
+          h('h3', {}, file.path + (file.newPath ? ' → ' + file.newPath : '')),
+          file.lines.map(line => h('div', {class: 'mono'}, line.line + ': ' + line.after)))),
+        plan.unchanged.length ? h('p', {class: 'meta'}, 'Also mentions the name, left as it is: ' + plan.unchanged.join(', ')) : '');
+      apply.disabled = false;
+    }}, 'Preview');
+    const apply = h('button', {type: 'button', class: 'primary', disabled: true, onclick: async () => {
+      try {
+        const done = await api.editorRename(id, {...change(), apply: true});
+        editorReturn = done.file;
+        dialog.close();
+        toast('Renamed ' + from + ' to ' + done.to);
+        route();
+      } catch (error) {
+        toast(error.message, true);
+      }
+    }}, 'Rename');
+    const dialog = h('dialog', {class: 'wide'},
+      h('h2', {}, 'Rename ' + from),
+      h('p', {class: 'meta'}, 'Updates the policy, the steps that run it and the variables it sets, as one saved step of history.'),
+      h('div', {class: 'editor-form'}, h('label', {}, 'New name ', to), show),
+      preview,
+      h('div', {class: 'actions'}, h('button', {type: 'button', onclick: () => dialog.close()}, 'Cancel'), apply));
+    dialog.addEventListener('close', () => dialog.remove());
+    document.body.append(dialog);
+    dialog.showModal();
+    to.select();
   }
 
   async function open(bundle, path, editable, span) {
@@ -1549,15 +1907,7 @@ async function editorView(id, isCurrent) {
         return;
       }
       if (!isCurrent()) return;
-      const language = LANGUAGES[path.slice(path.lastIndexOf('.') + 1).toLowerCase()] || 'plaintext';
-      const model = monaco.editor.createModel(content, language);
-      opened.set(key, {bundle, path, editable, base: content, model});
-      model.onDidChangeContent(() => {
-        renderTree();
-        renderTabs();
-        saveButton.disabled = !dirty().length;
-        schedule();
-      });
+      addBuffer(bundle, path, editable, content, content);
     }
     if (!tabs.includes(key)) tabs.push(key);
     active = key;
@@ -1605,6 +1955,7 @@ async function editorView(id, isCurrent) {
     if (result.analyzed) {
       findings = localized(result.problems);
       general = localized(result.general);
+      outline = result.outline;
     } else {
       syntax = localized(result.problems);
     }
@@ -1634,6 +1985,7 @@ async function editorView(id, isCurrent) {
   leaveGuard = silent => !dirty().length || (!silent && confirm('Discard your unsaved changes?'));
   leaveView = () => {
     clearTimeout(timer);
+    disposables.forEach(d => d.dispose());
     editor.dispose();
     opened.forEach(file => file.model.dispose());
   };
@@ -1643,13 +1995,15 @@ async function editorView(id, isCurrent) {
       h('a', {href: '#/proxy/' + encodeURIComponent(id)}, '← ' + workspace.proxy),
       status,
       h('span', {class: 'spacer'}),
-      saveButton),
-    h('div', {class: 'editor-body'}, tree, h('div', {class: 'editor-main'}, tabBar, host)),
+      renameButton, newPolicyButton, saveButton),
+    h('div', {class: 'editor-body'}, tree, h('div', {class: 'editor-main'}, tabBar, host), rail),
     h('div', {class: 'editor-problems'}, problemsHead, problemsList));
 
   renderAll();
-  const first = workspace.bundles[0].files.find(f => f.text && f.path.startsWith('proxies/'))
+  const first = workspace.bundles[0].files.find(f => f.path === editorReturn)
+    || workspace.bundles[0].files.find(f => f.text && f.path.startsWith('proxies/'))
     || workspace.bundles[0].files.find(f => f.text);
+  editorReturn = null;
   if (first) open(root, first.path, workspace.bundles[0].editable);
   schedule();
   return page;

@@ -3,6 +3,7 @@ package dev.apigeemap.ui;
 import dev.apigeemap.analysis.BundleAnalyzer;
 import dev.apigeemap.analysis.BundleLocator;
 import dev.apigeemap.analysis.SourceMap;
+import dev.apigeemap.analysis.VariableFlow;
 import dev.apigeemap.analysis.Xml;
 import dev.apigeemap.history.SourceHistory;
 import dev.apigeemap.migration.Finding;
@@ -10,6 +11,7 @@ import dev.apigeemap.migration.FixContext;
 import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.model.BundleReport;
 import dev.apigeemap.model.Issue;
+import dev.apigeemap.model.Policy;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.IOException;
@@ -62,8 +64,10 @@ final class EditorService {
      * @param analyzed false when the XML is not well-formed, or when the bundle could not be analyzed: {@code
      *                 problems} then holds what stopped it, and the findings of the last check still stand
      * @param general  findings and issues about the proxy as a whole
+     * @param outline  the flows and variables of what was checked; null when it could not be analyzed
      */
-    record Check(boolean analyzed, List<Problem> problems, List<Problem> general, String error) {
+    record Check(boolean analyzed, List<Problem> problems, List<Problem> general, String error,
+                 EditorOutline outline) {
     }
 
     private final UiService service;
@@ -82,7 +86,8 @@ final class EditorService {
             boolean editable = bundle.getValue().equals(root);
             bundles.add(new EditorBundle(bundle.getKey(), editable, files(bundle.getValue())));
         }
-        return Map.of("proxy", bundles.get(0).name(), "bundles", bundles);
+        return Map.of("proxy", bundles.get(0).name(), "bundles", bundles, "catalog", PolicyCatalog.ENTRIES,
+                "builtIns", VariableFlow.builtIns());
     }
 
     /**
@@ -150,13 +155,13 @@ final class EditorService {
                 Files.writeString(file, buffer.content());
             }
             List<Problem> syntax = syntax(name, copy);
-            if (!syntax.isEmpty()) return new Check(false, syntax, List.of(), null);
+            if (!syntax.isEmpty()) return new Check(false, syntax, List.of(), null, null);
             try {
                 BundleReport report = service.analyzer().analyze(BundleLocator.locate(copy));
                 return check(report, service.migrate(report));
             } catch (IOException | RuntimeException e) {
                 return new Check(false, List.of(), List.of(),
-                        String.valueOf(e.getMessage()).replace(copy.toString(), name));
+                        String.valueOf(e.getMessage()).replace(copy.toString(), name), null);
             }
         } finally {
             deleteTree(shadow);
@@ -179,7 +184,7 @@ final class EditorService {
             general.add(new Problem(report.name(), null, null, issue.severity().name(), null, null, issue.message(),
                     null));
         }
-        return new Check(true, problems, general, null);
+        return new Check(true, problems, general, null, EditorOutline.of(report));
     }
 
     /** One subject per file: a rule that points at a place in a file names the file as a whole too, for its context. */
@@ -240,7 +245,7 @@ final class EditorService {
     /**
      * Writes {@code {files: [{path, content, base}]}} to the proxy and records them as one step of its history, after
      * the changes made by hand before. Nothing is written when a file is no longer {@code base}, the text it was
-     * opened with.
+     * opened with. A file without {@code base} is new, and must not exist yet.
      */
     synchronized SourceHistory.Step save(String id, Map<?, ?> request) throws IOException {
         Path bundle = service.bundleDir(id);
@@ -249,17 +254,54 @@ final class EditorService {
         Map<Path, String> writes = new LinkedHashMap<>();
         for (Buffer file : files) {
             Path path = inside(bundle, file.path());
-            if (!Files.isRegularFile(path)) throw new UiService.UiException(404, "Unknown file " + file.path());
-            if (!Objects.equals(text(path), file.base())) {
+            if (file.base() == null) {
+                if (Files.exists(path)) throw new UiService.UiException(409, file.path() + " already exists");
+            } else if (!Files.isRegularFile(path)) {
+                throw new UiService.UiException(404, "Unknown file " + file.path());
+            } else if (!Objects.equals(text(path), file.base())) {
                 throw new UiService.UiException(409, file.path() + " changed since it was opened: reload the page");
             }
             writes.put(path, file.content());
         }
         try (SourceHistory history = SourceHistory.open(bundle, historyRoot)) {
             history.record("Manual changes");
-            for (Map.Entry<Path, String> write : writes.entrySet()) Files.writeString(write.getKey(), write.getValue());
+            for (Map.Entry<Path, String> write : writes.entrySet()) {
+                Files.createDirectories(write.getKey().getParent());
+                Files.writeString(write.getKey(), write.getValue());
+            }
             return history.record(files.size() == 1 ? "Edit " + files.get(0).path() : "Edit " + files.size() + " files");
         }
+    }
+
+    /**
+     * What renaming a policy of the proxy changes, from the saved files; with {@code apply} true in {@code {from, to,
+     * apply}} also writes it, as one step of history.
+     */
+    synchronized PolicyRename.Plan rename(String id, Map<?, ?> request) throws IOException {
+        if (!(request.get("from") instanceof String from) || !(request.get("to") instanceof String to)) {
+            throw new UiService.UiException(400, "Missing policy name");
+        }
+        Path bundle = service.bundleDir(id);
+        Policy policy = service.analyzed(id).policies().stream().filter(p -> p.name().equals(from)).findFirst()
+                .orElseThrow(() -> new UiService.UiException(404, "Unknown policy " + from));
+        Map<String, String> texts = new LinkedHashMap<>();
+        for (EditorFile file : files(bundle)) {
+            if (file.text()) texts.put(file.path(), text(bundle.resolve(file.path())));
+        }
+        PolicyRename rename = new PolicyRename(from, to, policy.file());
+        PolicyRename.Plan plan = rename.plan(texts);
+        if (!Boolean.TRUE.equals(request.get("apply"))) return plan;
+        try (SourceHistory history = SourceHistory.open(bundle, historyRoot)) {
+            history.record("Manual changes");
+            for (Map.Entry<String, String> changed : rename.changed().entrySet()) {
+                Files.writeString(bundle.resolve(changed.getKey()), changed.getValue());
+            }
+            if (!plan.file().equals(policy.file())) {
+                Files.move(bundle.resolve(policy.file()), bundle.resolve(plan.file()));
+            }
+            history.record("Rename policy " + from + " to " + to);
+        }
+        return plan;
     }
 
     private record Buffer(String path, String content, String base) {

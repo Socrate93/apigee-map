@@ -152,6 +152,139 @@ class EditorTest {
         assertEquals(true, check(List.of(Map.of("path", "proxies/default.xml", "content", base))).get("analyzed"));
     }
 
+    @Test
+    void outlinesTheFlowsInTheOrderTheyRun() throws Exception {
+        Map<?, ?> outline = (Map<?, ?>) check(List.of()).get("outline");
+        List<?> lanes = (List<?>) outline.get("lanes");
+
+        Map<?, ?> request = (Map<?, ?>) lanes.get(0);
+        assertEquals("ProxyEndpoint default request", request.get("title"));
+        Map<?, ?> preFlow = (Map<?, ?>) ((List<?>) request.get("segments")).get(0);
+        assertEquals("PreFlow", preFlow.get("label"));
+        assertEquals("Request", preFlow.get("element"));
+        Map<?, ?> first = (Map<?, ?>) ((List<?>) preFlow.get("steps")).get(0);
+        assertEquals("Verify-API-Key", first.get("policy"));
+        assertEquals("policies/Verify-API-Key.xml", first.get("file"));
+
+        Path file = proxies.resolve("orders-api/apiproxy/proxies/default.xml");
+        assertEquals(lineOf(Files.readString(file), "<Step><Name>Verify-API-Key"),
+                ((Number) ((Map<?, ?>) first.get("span")).get("line")).intValue());
+        assertTrue(lanes.stream().map(l -> ((Map<?, ?>) l).get("title")).toList()
+                .containsAll(List.of("ProxyEndpoint default routes", "TargetEndpoint default request",
+                        "TargetEndpoint default response", "ProxyEndpoint default faults")));
+    }
+
+    @Test
+    void tellsWhoSetsAndReadsAVariable() throws Exception {
+        Map<?, ?> outline = (Map<?, ?>) check(List.of()).get("outline");
+        Map<?, ?> cache = ((List<?>) outline.get("variables")).stream().map(v -> (Map<?, ?>) v)
+                .filter(v -> v.get("name").equals("lookupcache.LC-Orders.*")).findFirst().orElseThrow();
+
+        Map<?, ?> writer = (Map<?, ?>) ((List<?>) cache.get("setBy")).get(0);
+        assertEquals("LC-Orders", writer.get("policy"));
+        assertEquals("policies/LC-Orders.xml", writer.get("file"));
+    }
+
+    @Test
+    void outlinesTextThatIsNotSaved() throws Exception {
+        Path file = proxies.resolve("orders-api/apiproxy/proxies/default.xml");
+        String edited = Files.readString(file).replace("<Step><Name>Q-Partner</Name></Step>",
+                "<Step><Name>Q-Partner</Name></Step><Step><Name>Nowhere</Name></Step>");
+
+        Map<?, ?> outline = (Map<?, ?>) check(List.of(Map.of("path", "proxies/default.xml", "content", edited))).get("outline");
+
+        Map<?, ?> preFlow = (Map<?, ?>) ((List<?>) ((Map<?, ?>) ((List<?>) outline.get("lanes")).get(0)).get("segments")).get(0);
+        Map<?, ?> last = (Map<?, ?>) ((List<?>) preFlow.get("steps")).get(3);
+        assertEquals("Nowhere", last.get("policy"));
+        assertEquals(null, last.get("file"));
+    }
+
+    @Test
+    void catalogPoliciesAreWellFormedAndRaiseNoError() throws Exception {
+        for (PolicyCatalog.Entry entry : PolicyCatalog.ENTRIES) {
+            String name = entry.prefix() + "-Check";
+            List<Map<String, String>> buffers = new java.util.ArrayList<>();
+            buffers.add(Map.of("path", "policies/" + name + ".xml", "content", entry.template().replace("{{name}}", name)));
+            if (entry.script() != null) buffers.add(Map.of("path", "resources/jsc/" + name + ".js", "content", entry.script()));
+
+            Map<?, ?> check = check(buffers);
+
+            assertEquals(true, check.get("analyzed"), entry.type() + ": " + check.get("problems"));
+            List<?> own = problems(check).stream().map(p -> (Map<?, ?>) p)
+                    .filter(p -> ("policies/" + name + ".xml").equals(p.get("file")) && "ERROR".equals(p.get("severity"))).toList();
+            assertEquals(List.of(), own, entry.type());
+        }
+    }
+
+    @Test
+    void savesANewFileAndRefusesOneThatExists() throws Exception {
+        String content = "<Quota name=\"Q-New\"/>";
+        Map<String, Object> file = new java.util.HashMap<>(Map.of("path", "policies/Q-New.xml", "content", content));
+        file.put("base", null);
+        String body = Json.write(Map.of("files", List.of(file)));
+
+        assertEquals(200, post("/api/editor/save?id=" + ID, body).statusCode());
+
+        assertEquals(content, Files.readString(proxies.resolve("orders-api/apiproxy/policies/Q-New.xml")));
+        assertEquals(409, post("/api/editor/save?id=" + ID, body).statusCode());
+    }
+
+    @Test
+    void previewsARenameWithoutWritingIt() throws Exception {
+        Path dir = proxies.resolve("orders-api/apiproxy");
+        String saved = Files.readString(dir.resolve("proxies/default.xml"));
+
+        Map<?, ?> plan = rename("LC-Orders", "LC-Commands", false);
+
+        assertEquals("policies/LC-Commands.xml", plan.get("file"));
+        List<?> paths = ((List<?>) plan.get("files")).stream().map(f -> ((Map<?, ?>) f).get("path")).toList();
+        assertTrue(paths.containsAll(List.of("policies/LC-Orders.xml", "proxies/default.xml")), paths.toString());
+        assertEquals(saved, Files.readString(dir.resolve("proxies/default.xml")));
+        assertTrue(Files.exists(dir.resolve("policies/LC-Orders.xml")));
+    }
+
+    @Test
+    void renamesAPolicyWhereverItIsNamedAsOneStep() throws Exception {
+        Path dir = proxies.resolve("orders-api/apiproxy");
+        Path script = dir.resolve("resources/jsc/format-order.js");
+        Files.writeString(script, Files.readString(script) + "\n// LC-Orders\nvar hit = context.getVariable('lookupcache.LC-Orders.cachehit');\n");
+
+        Map<?, ?> plan = rename("LC-Orders", "LC-Commands", true);
+
+        String endpoint = Files.readString(dir.resolve("proxies/default.xml"));
+        assertTrue(endpoint.contains("<Step><Name>LC-Commands</Name></Step>"));
+        assertTrue(endpoint.contains("lookupcache.LC-Commands.cachehit = false"));
+        assertFalse(endpoint.contains("LC-Orders"));
+        assertFalse(Files.exists(dir.resolve("policies/LC-Orders.xml")));
+        assertTrue(Files.readString(dir.resolve("policies/LC-Commands.xml")).contains("name=\"LC-Commands\""));
+        assertTrue(Files.readString(script).contains("lookupcache.LC-Commands.cachehit"));
+        assertEquals(1, ((List<?>) plan.get("unchanged")).size(), plan.toString());
+        assertTrue(((String) ((List<?>) plan.get("unchanged")).get(0)).startsWith("resources/jsc/format-order.js:"));
+
+        List<?> steps = (List<?>) ((Map<?, ?>) ((List<?>) Json.parse(get("/api/history?id=" + ID).body())).get(0)).get("steps");
+        assertEquals("Rename policy LC-Orders to LC-Commands", ((Map<?, ?>) steps.get(0)).get("title"));
+        assertEquals(true, check(List.of()).get("analyzed"));
+        assertTrue(problems(check(List.of())).stream().map(p -> (Map<?, ?>) p).noneMatch(p -> "LC-Orders".equals(p.get("location"))));
+    }
+
+    @Test
+    void refusesToRenameOverAPolicyOrToABadName() throws Exception {
+        assertEquals(409, renameResponse("LC-Orders", "PC-Orders", true).statusCode());
+        assertEquals(400, renameResponse("LC-Orders", "bad.name", true).statusCode());
+        assertEquals(404, renameResponse("Nothing", "Other", true).statusCode());
+        assertTrue(Files.exists(proxies.resolve("orders-api/apiproxy/policies/LC-Orders.xml")));
+    }
+
+    private Map<?, ?> rename(String from, String to, boolean apply) throws Exception {
+        HttpResponse<String> response = renameResponse(from, to, apply);
+        assertEquals(200, response.statusCode(), response.body());
+        return (Map<?, ?>) Json.parse(response.body());
+    }
+
+    private HttpResponse<String> renameResponse(String from, String to, boolean apply) throws Exception {
+        return post("/api/editor/rename?id=" + ID, Json.write(Map.of("from", from, "to", to, "apply", apply)));
+    }
+
     private HttpResponse<String> save(String content, String base) throws Exception {
         return post("/api/editor/save?id=" + ID, Json.write(Map.of("files",
                 List.of(Map.of("path", "proxies/default.xml", "content", content, "base", base)))));

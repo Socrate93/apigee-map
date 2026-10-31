@@ -189,6 +189,8 @@ public final class UiServer {
                     editor.read(query.get("id"), query.get("bundle"), query.get("path")));
             case "POST /api/editor/check" -> json(exchange, 200,
                     editor.check(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
+            case "POST /api/editor/rename" -> json(exchange, 200,
+                    editor.rename(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
             case "POST /api/editor/save" -> json(exchange, 200,
                     Map.of("step", Optional.ofNullable(editor.save(query.get("id"),
                             (Map<?, ?>) Json.parse(body(exchange)))).map(s -> (Object) s.id()).orElse("")));
