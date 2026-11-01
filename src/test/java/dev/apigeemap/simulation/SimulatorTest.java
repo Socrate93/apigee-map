@@ -3,6 +3,7 @@ package dev.apigeemap.simulation;
 import dev.apigeemap.analysis.BundleAnalyzer;
 import dev.apigeemap.analysis.BundleLocator;
 import dev.apigeemap.analysis.SharedFlowRepository;
+import dev.apigeemap.simulation.Simulation.Change;
 import dev.apigeemap.simulation.Simulation.Entry;
 import dev.apigeemap.simulation.Simulation.Input;
 import dev.apigeemap.simulation.Simulation.Result;
@@ -16,6 +17,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -129,7 +131,39 @@ class SimulatorTest {
     }
 
     private static Input call(String verb, String path, Map<String, String> headers, String body, Set<String> failing) {
-        return new Input(verb, path, headers, body, "200", "backend", Map.of(), failing);
+        return new Input(verb, path, headers, body, "200", "backend", Map.of(), failing, Map.of());
+    }
+
+    /** A proxy without a target, its steps in the PreFlow and the PostClientFlow, with its policies by name. */
+    private Result play(Map<String, String> policies, List<String> pre, List<String> post, Input input) throws IOException {
+        Path bundle = tmp.resolve("play/apiproxy");
+        write(bundle, "play.xml", "<APIProxy name=\"play\"/>");
+        write(bundle, "proxies/default.xml", """
+                <ProxyEndpoint name="default">
+                    <PreFlow name="PreFlow"><Request>%s</Request></PreFlow>
+                    <PostClientFlow name="PostClientFlow"><Response>%s</Response></PostClientFlow>
+                    <HTTPProxyConnection><BasePath>/v1</BasePath></HTTPProxyConnection>
+                    <RouteRule name="none"/>
+                </ProxyEndpoint>
+                """.formatted(steps(pre), steps(post)));
+        for (Map.Entry<String, String> policy : policies.entrySet()) {
+            write(bundle, "policies/" + policy.getKey() + ".xml", policy.getValue());
+        }
+        var report = new BundleAnalyzer(SharedFlowRepository.empty()).analyze(BundleLocator.locate(tmp.resolve("play")));
+        return Simulator.run(report, input);
+    }
+
+    private static String steps(List<String> names) {
+        return names.stream().map(n -> "<Step><Name>" + n + "</Name></Step>").collect(Collectors.joining());
+    }
+
+    private static Input post(Map<String, String> headers, String body) {
+        return new Input("POST", "/v1/x", headers, body, "200", null, Map.of(), Set.of(), Map.of());
+    }
+
+    private static String changed(Result result, String policy, String variable) {
+        return entry(result, policy).changes().stream().filter(c -> c.name().equals(variable)).findFirst()
+                .map(Change::after).orElse(null);
     }
 
     private static Entry entry(Result result, String name) {
@@ -190,7 +224,7 @@ class SimulatorTest {
 
     @Test
     void anErrorFromTheTargetGoesToTheFaultRules() throws Exception {
-        Result result = run(new Input("GET", "/v1/orders/12", Map.of(), null, "503", "down", Map.of(), Set.of()));
+        Result result = run(new Input("GET", "/v1/orders/12", Map.of(), null, "503", "down", Map.of(), Set.of(), Map.of()));
 
         assertEquals("ErrorResponseCode", result.fault());
         assertEquals("503", result.response().status());
@@ -208,6 +242,122 @@ class SimulatorTest {
     }
 
     @Test
+    void extractsFromAnXmlPayload() throws Exception {
+        String policy = """
+                <ExtractVariables name="EV-Xml">
+                    <VariablePrefix>x</VariablePrefix>
+                    <XMLPayload>
+                        <Namespaces><Namespace prefix="o">urn:orders</Namespace></Namespaces>
+                        <Variable name="id" type="string"><XPath>/o:order/o:id</XPath></Variable>
+                        <Variable name="kind"><XPath>/o:order/@kind</XPath></Variable>
+                        <Variable name="lines" type="integer"><XPath>count(/o:order/o:line)</XPath></Variable>
+                        <Variable name="all" type="nodeset"><XPath>/o:order/o:line</XPath></Variable>
+                        <Variable name="absent"><XPath>/o:order/o:nothing</XPath></Variable>
+                    </XMLPayload>
+                </ExtractVariables>
+                """;
+        String body = "<order xmlns=\"urn:orders\" kind=\"web\"><id>7</id><line>a</line><line>b</line></order>";
+
+        Result result = play(Map.of("EV-Xml", policy), List.of("EV-Xml"), List.of(), post(Map.of(), body));
+
+        assertNull(entry(result, "EV-Xml").note());
+        assertEquals("7", changed(result, "EV-Xml", "x.id"));
+        assertEquals("web", changed(result, "EV-Xml", "x.kind"));
+        assertEquals("2", changed(result, "EV-Xml", "x.lines"));
+        assertTrue(changed(result, "EV-Xml", "x.all").contains(">b</line>"));
+        assertNull(changed(result, "EV-Xml", "x.absent"));
+    }
+
+    @Test
+    void stopsAnXmlPayloadAtTheFirstValueWhenAsked() throws Exception {
+        String policy = """
+                <ExtractVariables name="EV-Xml">
+                    <XMLPayload stopPayloadProcessing="true">
+                        <Variable name="a"><XPath>/r/a</XPath></Variable>
+                        <Variable name="b"><XPath>/r/b</XPath></Variable>
+                    </XMLPayload>
+                </ExtractVariables>
+                """;
+
+        Result result = play(Map.of("EV-Xml", policy), List.of("EV-Xml"), List.of(), post(Map.of(), "<r><a>1</a><b>2</b></r>"));
+
+        assertEquals("1", changed(result, "EV-Xml", "apigee.a"));
+        assertNull(changed(result, "EV-Xml", "apigee.b"));
+    }
+
+    @Test
+    void saysWhyAnXmlPayloadCouldNotBeRead() throws Exception {
+        String policy = "<ExtractVariables name=\"EV-Xml\"><XMLPayload><Variable name=\"a\"><XPath>/r/a[</XPath></Variable></XMLPayload></ExtractVariables>";
+
+        assertTrue(play(Map.of("EV-Xml", policy), List.of("EV-Xml"), List.of(), post(Map.of(), "{}"))
+                .entries().get(0).note().contains("well-formed"));
+        assertTrue(play(Map.of("EV-Xml", policy), List.of("EV-Xml"), List.of(), post(Map.of(), "<r/>"))
+                .entries().get(0).note().contains("Not a valid XPath"));
+    }
+
+    @Test
+    void extractsFromFormParams() throws Exception {
+        String policy = """
+                <ExtractVariables name="EV-Form">
+                    <VariablePrefix>form</VariablePrefix>
+                    <FormParam name="who"><Pattern>user {name}</Pattern></FormParam>
+                </ExtractVariables>
+                """;
+        Map<String, String> policies = Map.of("EV-Form", policy);
+
+        Result form = play(policies, List.of("EV-Form"), List.of(),
+                post(Map.of("content-type", "application/x-www-form-urlencoded; charset=UTF-8"), "a=1&who=user+Ann%20Lee"));
+        assertEquals("Ann Lee", changed(form, "EV-Form", "form.name"));
+
+        Result json = play(policies, List.of("EV-Form"), List.of(), post(Map.of("Content-Type", "application/json"), "who=user x"));
+        assertNull(changed(json, "EV-Form", "form.name"));
+        assertTrue(entry(json, "EV-Form").note().contains("x-www-form-urlencoded"));
+    }
+
+    @Test
+    void aLookupCacheMissesUnlessAHitIsAsked() throws Exception {
+        Map<String, String> policies = Map.of("LC-Token", "<LookupCache name=\"LC-Token\"><AssignTo>token</AssignTo></LookupCache>");
+        Input hit = new Input("GET", "/v1/x", Map.of(), null, "200", null, Map.of(), Set.of(), Map.of("LC-Token", "abc"));
+
+        Result missed = play(policies, List.of("LC-Token"), List.of(), post(Map.of(), null));
+        assertEquals("false", changed(missed, "LC-Token", "lookupcache.LC-Token.cachehit"));
+        assertNull(changed(missed, "LC-Token", "token"));
+
+        Result found = play(policies, List.of("LC-Token"), List.of(), hit);
+        assertEquals(Status.ASSUMED, entry(found, "LC-Token").status());
+        assertEquals("true", changed(found, "LC-Token", "lookupcache.LC-Token.cachehit"));
+        assertEquals("abc", changed(found, "LC-Token", "token"));
+    }
+
+    @Test
+    void runsThePostClientFlowAfterAFault() throws Exception {
+        Map<String, String> policies = Map.of(
+                "RF-Stop", "<RaiseFault name=\"RF-Stop\"><FaultResponse><Set><StatusCode>403</StatusCode></Set></FaultResponse></RaiseFault>",
+                "AM-Log", "<AssignMessage name=\"AM-Log\"><AssignVariable><Name>logged</Name><Value>yes</Value></AssignVariable></AssignMessage>");
+
+        Result result = play(policies, List.of("RF-Stop"), List.of("AM-Log"), post(Map.of(), null));
+
+        assertEquals("RaiseFault", result.fault());
+        assertEquals("403", result.response().status());
+        assertEquals(Status.RAN, entry(result, "AM-Log").status());
+        assertTrue(entry(result, "AM-Log").location().contains("PostClientFlow"));
+    }
+
+    @Test
+    void thePostClientFlowDoesNotChangeTheResponseSent() throws Exception {
+        Map<String, String> policies = Map.of(
+                "AM-Late", "<AssignMessage name=\"AM-Late\"><AssignTo type=\"response\"/><Set><StatusCode>418</StatusCode></Set></AssignMessage>",
+                "RF-Late", "<RaiseFault name=\"RF-Late\"><FaultResponse><Set><StatusCode>500</StatusCode></Set></FaultResponse></RaiseFault>");
+
+        Result result = play(policies, List.of(), List.of("AM-Late", "RF-Late"), post(Map.of(), null));
+
+        assertNull(result.fault());
+        assertEquals("200", result.response().status());
+        assertEquals(Status.FAILED, entry(result, "RF-Late").status());
+        assertTrue(result.warnings().stream().anyMatch(w -> w.contains("after the response was sent")));
+    }
+
+    @Test
     void aPathOutsideTheBasePathIsReported() throws Exception {
         assertTrue(run(call("GET", "/elsewhere", Map.of(), null, Set.of())).warnings().get(0).contains("no base path"));
     }
@@ -219,7 +369,7 @@ class SimulatorTest {
                 .analyze(BundleLocator.locate(examples.resolve("orders-api")));
 
         Result result = Simulator.run(report, new Input("GET", "/v1/orders/42", Map.of("x-api-key", "k"), null, "200",
-                "{}", Map.of("private.backend.password", "secret"), Set.of()));
+                "{}", Map.of("private.backend.password", "secret"), Set.of(), Map.of()));
 
         assertTrue(result.entries().stream().anyMatch(e -> !e.bundle().equals("orders-api")), "runs inside shared flows");
         assertEquals(Status.RAN, entry(result, "getOrder").status());

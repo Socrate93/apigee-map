@@ -4,14 +4,18 @@ import dev.apigeemap.analysis.Xml;
 import dev.apigeemap.model.Policy;
 import dev.apigeemap.protocol.Json;
 import dev.apigeemap.simulation.Simulation.Status;
+import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 
 import java.io.IOException;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -54,18 +58,19 @@ final class Policies {
         return FAILURES.getOrDefault(type, new Failure("ExecutionFailed", "500"));
     }
 
-    static Outcome run(Element xml, Policy policy, Path bundle, Exchange exchange) {
+    /** @param cached the value a LookupCache finds, or null for a miss */
+    static Outcome run(Element xml, Policy policy, Path bundle, Exchange exchange, String cached) {
         return switch (policy.type()) {
             case "AssignMessage" -> assignMessage(xml, exchange);
             case "ExtractVariables" -> extractVariables(xml, exchange);
             case "RaiseFault" -> raiseFault(xml, exchange);
             case "Javascript" -> javascript(xml, bundle, exchange);
-            default -> ASSUMED.contains(policy.type()) ? assumed(xml, policy, exchange)
+            default -> ASSUMED.contains(policy.type()) ? assumed(xml, policy, exchange, cached)
                     : new Outcome(Status.NOT_SIMULATED, "What it does is not in the rest of this trace");
         };
     }
 
-    private static Outcome assumed(Element xml, Policy policy, Exchange exchange) {
+    private static Outcome assumed(Element xml, Policy policy, Exchange exchange, String cached) {
         String name = policy.name();
         switch (policy.type()) {
             case "VerifyAPIKey" -> {
@@ -74,8 +79,11 @@ final class Policies {
             }
             case "OAuthV2" -> exchange.set("client_id", "simulated");
             case "LookupCache" -> {
-                exchange.set("lookupcache." + name + ".cachehit", "false");
-                return new Outcome(Status.ASSUMED, "A cache miss");
+                exchange.set("lookupcache." + name + ".cachehit", String.valueOf(cached != null));
+                if (cached == null) return new Outcome(Status.ASSUMED, "A cache miss");
+                String assignTo = Xml.text(xml, "AssignTo");
+                if (assignTo != null) exchange.set(assignTo.strip(), cached);
+                return new Outcome(Status.ASSUMED, "A cache hit, as asked");
             }
             case "ServiceCallout" -> {
                 return new Outcome(Status.ASSUMED, "Not called: set what its response gives in Variables");
@@ -216,11 +224,70 @@ final class Policies {
                 if (value != null) exchange.set(start + variable.getAttribute("name"), value instanceof Map || value instanceof List ? Json.write(value) : number(value));
             }
         }
-        return new Outcome(Status.RAN, Xml.path(xml, "XMLPayload") != null || Xml.path(xml, "FormParam") != null
-                ? "XMLPayload and FormParam are not read here" : null);
+        List<String> notes = new ArrayList<>();
+        List<Element> formParams = Xml.children(xml, "FormParam");
+        if (!formParams.isEmpty()) {
+            Map<String, String> form = form(message, exchange);
+            if (form == null) notes.add("FormParam needs a body of type application/x-www-form-urlencoded");
+            else for (Element param : formParams) pattern(param, form.get(param.getAttribute("name")), start, exchange);
+        }
+        Element xmlPayload = Xml.path(xml, "XMLPayload");
+        if (xmlPayload != null) {
+            String note = xmlPayload(xmlPayload, exchange.get(message + ".content"), start, exchange);
+            if (note != null) notes.add(note);
+        }
+        return new Outcome(Status.RAN, notes.isEmpty() ? null : String.join(". ", notes));
     }
 
-    private static String number(Object value) {
+    /** The fields of a form body; null when the message does not hold one. */
+    private static Map<String, String> form(String message, Exchange exchange) {
+        String type = exchange.get(message + ".header.Content-Type");
+        String body = exchange.get(message + ".content");
+        if (body == null || type == null || !type.toLowerCase(Locale.ROOT).contains("x-www-form-urlencoded")) return null;
+        Map<String, String> fields = new LinkedHashMap<>();
+        for (String pair : body.split("&")) {
+            if (pair.isEmpty()) continue;
+            int equals = pair.indexOf('=');
+            fields.putIfAbsent(decoded(equals < 0 ? pair : pair.substring(0, equals)),
+                    equals < 0 ? "" : decoded(pair.substring(equals + 1)));
+        }
+        return fields;
+    }
+
+    private static String decoded(String text) {
+        try {
+            return URLDecoder.decode(text, StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            return text;
+        }
+    }
+
+    /** Sets the variables of an {@code <XMLPayload>}; answers why it could not read them, or null. */
+    private static String xmlPayload(Element payload, String content, String start, Exchange exchange) {
+        Document document = XmlPayload.parse(content);
+        if (document == null) return "XMLPayload needs a well-formed XML body";
+        Map<String, String> namespaces = new LinkedHashMap<>();
+        for (Element namespace : Xml.children(Xml.path(payload, "Namespaces"), "Namespace")) {
+            namespaces.put(namespace.getAttribute("prefix"), Xml.text(namespace));
+        }
+        boolean stops = "true".equalsIgnoreCase(payload.getAttribute("stopPayloadProcessing"));
+        for (Element variable : Xml.children(payload, "Variable")) {
+            String path = Xml.text(variable, "XPath");
+            if (path == null) continue;
+            String value;
+            try {
+                value = XmlPayload.value(document, path.strip(), "nodeset".equals(variable.getAttribute("type")), namespaces);
+            } catch (IllegalArgumentException e) {
+                return "Not a valid XPath: " + path;
+            }
+            if (value == null) continue;
+            exchange.set(start + variable.getAttribute("name"), value);
+            if (stops) break;
+        }
+        return null;
+    }
+
+    static String number(Object value) {
         return value instanceof Double d && d == Math.rint(d) ? String.valueOf(d.longValue()) : String.valueOf(value);
     }
 

@@ -300,7 +300,7 @@ final class EditorService {
         if (request.get("failing") instanceof List<?> names) names.forEach(n -> failing.add(String.valueOf(n)));
         return new Simulation.Input(string(request, "verb"), string(request, "path"), strings(request, "headers"),
                 string(request, "body"), string(request, "status"), string(request, "targetBody"),
-                strings(request, "variables"), failing);
+                strings(request, "variables"), failing, strings(request, "cacheHits"));
     }
 
     private static String string(Map<?, ?> request, String name) {

@@ -12,9 +12,11 @@ public final class Simulation {
      * @param status    what the target answers
      * @param variables values set before the first step, for what comes from outside the proxy (a KVM, a cache...)
      * @param failing   policies to fail, whatever they would do
+     * @param cacheHits the LookupCache policies that find an entry, with its value; the others miss
      */
     public record Input(String verb, String path, Map<String, String> headers, String body, String status,
-                        String targetBody, Map<String, String> variables, Set<String> failing) {
+                        String targetBody, Map<String, String> variables, Set<String> failing,
+                        Map<String, String> cacheHits) {
     }
 
     public enum Status {

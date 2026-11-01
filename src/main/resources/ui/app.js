@@ -2204,13 +2204,14 @@ async function editorView(id, isCurrent) {
     const targetBody = h('textarea', {rows: 3, spellcheck: 'false'});
     const variables = h('textarea', {rows: 3, placeholder: 'config.backend.timeout=3000', spellcheck: 'false'});
     const failing = h('input', {type: 'text', placeholder: 'Verify-API-Key, Q-Partner', spellcheck: 'false'});
+    const cacheHits = h('textarea', {rows: 3, placeholder: 'LC-Orders=cached value', spellcheck: 'false'});
     const result = h('div', {class: 'editor-trace'}, h('p', {class: 'meta'}, 'Plays a call through the text in the editor, without deploying it. The target answers what you set here.'));
     const run = h('button', {type: 'button', class: 'primary', onclick: async () => {
       run.disabled = true;
       try {
         const trace = await api.editorSimulate(id, {buffers: buffers(), verb: verb.value, path: path.value, headers: pairs(headers.value, ':'),
           body: body.value, status: status.value, targetBody: targetBody.value, variables: pairs(variables.value, '='),
-          failing: failing.value.split(',').map(s => s.trim()).filter(Boolean)});
+          failing: failing.value.split(',').map(s => s.trim()).filter(Boolean), cacheHits: pairs(cacheHits.value, '=')});
         simulated = new Map();
         for (const entry of trace.entries) {
           if (entry.file && entry.bundle === root) simulated.set(entry.name, entry.status);
@@ -2248,7 +2249,8 @@ async function editorView(id, isCurrent) {
       h('div', {class: 'editor-sim-line'}, verb, path, run),
       field('Request headers', headers), field('Request body', body),
       field('Target status', status), field('Target body', targetBody),
-      field('Variables set from outside', variables), field('Policies to fail', failing));
+      field('Variables set from outside', variables), field('Policies to fail', failing),
+      field('LookupCache hits', cacheHits));
     return h('div', {class: 'editor-sim-body'}, form, result);
   }
 

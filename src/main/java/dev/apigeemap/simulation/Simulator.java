@@ -88,15 +88,25 @@ public final class Simulator {
             }
             faultEndpoint = proxy;
             response(proxy, proxyFlow);
-            steps(report, Xml.children(Xml.path(proxy, "PostClientFlow", "Response"), "Step"),
-                    name(proxy) + " › PostClientFlow › Response");
         } catch (Fault f) {
             fault = f.name;
             fault(f, proxy);
         }
         Exchange.Message response = exchange.message("response");
-        return new Result(List.copyOf(entries), new Response(response.status == null ? "200" : response.status,
-                response.reason, new LinkedHashMap<>(response.headers), response.content), fault, warnings);
+        Response sent = new Response(response.status == null ? "200" : response.status, response.reason,
+                new LinkedHashMap<>(response.headers), response.content);
+        postClientFlow(proxy);
+        return new Result(List.copyOf(entries), sent, fault, warnings);
+    }
+
+    /** Runs once the response is sent, after a fault too: what it does no longer reaches the client. */
+    private void postClientFlow(Element proxy) {
+        try {
+            steps(report, Xml.children(Xml.path(proxy, "PostClientFlow", "Response"), "Step"),
+                    name(proxy) + " › PostClientFlow › Response");
+        } catch (Fault f) {
+            warnings.add("The PostClientFlow failed after the response was sent: " + f.getMessage());
+        }
     }
 
     /** Sets the request up, and picks the ProxyEndpoint whose base path it calls. */
@@ -221,8 +231,7 @@ public final class Simulator {
                     + "\",\"detail\":{\"errorcode\":\"" + fault.name + "\"}}}";
             response.headers.put("Content-Type", "application/json");
         }
-        warnings.add("The order of fault rules between TargetEndpoint and ProxyEndpoint is an approximation, and "
-                + "PostClientFlow is not run after a fault");
+        warnings.add("The order of fault rules between TargetEndpoint and ProxyEndpoint is an approximation");
         try {
             boolean handled = faultRules(faultEndpoint);
             if (!handled && faultEndpoint != proxy) faultRules(proxy);
@@ -312,7 +321,8 @@ public final class Simulator {
                 note = flowCallout(xml, bundle, location);
                 status = note == null ? Status.RAN : Status.NOT_SIMULATED;
             } else {
-                Policies.Outcome outcome = Policies.run(xml, policy, Path.of(bundle.path()), exchange);
+                Policies.Outcome outcome = Policies.run(xml, policy, Path.of(bundle.path()), exchange,
+                        input.cacheHits().get(policy.name()));
                 status = outcome.status();
                 note = outcome.note();
             }
