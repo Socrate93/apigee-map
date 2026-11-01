@@ -257,6 +257,13 @@ table.tests .purpose { color: var(--fg); margin: 2px 0; }
 .editor-problems-head input[type=search] { flex: 0 1 280px; min-width: 0; padding: 3px 8px; }
 .editor-problems-list { overflow-y: auto; padding: 2px 8px; }
 .editor-problems-list .meta { padding: 8px; }
+.editor-problems-chips { display: flex; flex-wrap: wrap; gap: 12px; }
+.editor-problems-list section .editor-problem { width: 100%; }
+.editor-problems-list section .editor-problem .meta { padding: 0; min-width: 3ch; text-align: right; }
+.editor-problem mark { background: var(--accent-soft); color: inherit; border-radius: 2px; }
+.editor-quick-open { max-height: 50vh; overflow-y: auto; margin-top: 8px; }
+.editor-quick-open .meta { margin: 0; font-size: 12px; }
+.editor-quick-input { width: 100%; box-sizing: border-box; }
 .editor-page.simulating { grid-template-rows: auto minmax(0, 1fr) min(var(--panel-height, 46vh), calc(100% - 160px)); }
 .editor-page.no-panel { grid-template-rows: auto minmax(0, 1fr) auto; }
 .editor-file.deleted .name { text-decoration: line-through; }
@@ -282,6 +289,8 @@ table.tests .purpose { color: var(--fg); margin: 2px 0; }
 .editor-graph .node.off { opacity: .45; }
 .editor-graph .node.missing { stroke: var(--err); }
 .editor-graph .node.on { fill: var(--accent); stroke: var(--accent); }
+.editor-graph .node.match { stroke: var(--accent); stroke-width: 3; }
+.editor-graph.filtering .node:not(.match) { opacity: .25; }
 .editor-graph-tip { position: fixed; z-index: 15; max-width: 360px; padding: 4px 8px; border-radius: 6px; background: var(--fg); color: var(--bg); font-size: 12px; overflow-wrap: anywhere; pointer-events: none; transform: translate(-50%, -100%); }
 .editor-graph-tip[hidden] { display: none; }
 .editor-sim-body { display: grid; grid-template-columns: 420px minmax(0, 1fr); min-height: 0; }

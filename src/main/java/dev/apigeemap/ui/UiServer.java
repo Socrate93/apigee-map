@@ -196,6 +196,8 @@ public final class UiServer {
                     editor.assist(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
             case "POST /api/editor/simulate" -> json(exchange, 200,
                     editor.simulate(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
+            case "POST /api/editor/search" -> json(exchange, 200,
+                    editor.search(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
             case "POST /api/editor/rename" -> json(exchange, 200,
                     editor.rename(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
             case "POST /api/editor/save" -> json(exchange, 200,

@@ -93,6 +93,7 @@ const api = {
   editorSave: (id, files) => request('POST', '/api/editor/save?id=' + encodeURIComponent(id), {files}),
   editorAssist: (id, asked) => request('POST', '/api/editor/assist?id=' + encodeURIComponent(id), asked),
   editorSimulate: (id, call) => request('POST', '/api/editor/simulate?id=' + encodeURIComponent(id), call),
+  editorSearch: (id, search) => request('POST', '/api/editor/search?id=' + encodeURIComponent(id), search),
   editorRename: (id, change) => request('POST', '/api/editor/rename?id=' + encodeURIComponent(id), change),
 };
 
@@ -1613,6 +1614,57 @@ function svg(tag, attrs, ...children) {
   return element;
 }
 
+/** A tag, with attributes that may hold a >; the comments, CDATA, instructions and text around it; a stray <. */
+const XML_TOKENS = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?]]>|<\?[\s\S]*?\?>|<![^>]*>|<\/?[\w:.-]+(?:"[^"]*"|'[^']*'|[^'">])*>|[^<]+|</g;
+const BLANK_LINE = /(\r\n|\r|\n)[ \t]*(\r\n|\r|\n)/;
+
+/**
+ * The XML reindented, or null when it is not well-formed. Only the spaces between elements change: an element holding
+ * text, a Payload (what it holds is sent as it is), an xsl:text and what asks to keep its spaces stay as they are.
+ */
+function formatXml(text, unit, eol) {
+  const top = {children: []};
+  const open = [top];
+  let at = 0;
+  for (const token of text.match(XML_TOKENS) || []) {
+    const start = at;
+    at += token.length;
+    const parent = open[open.length - 1];
+    if (token === '<') return null;
+    if (token.startsWith('</')) {
+      if (parent.name !== token.slice(2, -1).trim()) return null;
+      parent.close = token;
+      parent.end = at;
+      open.pop();
+    } else if (/^<[^!?]/.test(token)) {
+      const element = {name: /^<([^\s/>]+)/.exec(token)[1], tag: token, start, end: at, children: []};
+      parent.children.push(element);
+      if (!token.endsWith('/>')) open.push(element);
+    } else {
+      parent.children.push({text: token});
+    }
+  }
+  const isContent = node => !node.tag && !/^<(!--|\?|!D)/.test(node.text) && !!node.text.trim();
+  if (open.length > 1 || top.children.some(isContent)) return null;
+  const kept = element => /(^|:)(Payload|text)$/.test(element.name) || /\sxml:space\s*=/.test(element.tag)
+    || element.children.some(isContent) || !element.children.some(c => c.tag || /[\r\n]/.test(c.text));
+  const lines = [];
+  const write = (children, depth) => children.forEach((node, index) => {
+    const pad = unit.repeat(depth);
+    if (!node.tag && !node.text.trim()) {
+      if (index > 0 && index < children.length - 1 && BLANK_LINE.test(node.text)) lines.push('');
+    } else if (node.tag && !kept(node)) {
+      lines.push(pad + node.tag);
+      write(node.children, depth + 1);
+      lines.push(pad + node.close);
+    } else {
+      lines.push(pad + (node.tag ? text.slice(node.start, node.end) : node.text.trim()));
+    }
+  });
+  write(top.children, 0);
+  return lines.join(eol) + (/[\r\n]$/.test(text) ? eol : '');
+}
+
 const PANEL_KEY = 'apigee-map.editor.panel';
 const PANEL_MIN_HEIGHT = 80;
 const CODE_MIN_HEIGHT = 160;
@@ -1637,6 +1689,7 @@ async function editorView(id, isCurrent) {
   /** The tab shown in the bottom panel, null when all are closed, and the tabs open there. */
   let panel = 'problems';
   const openPanels = ['problems', 'simulate'];
+  let severityShown = 'all';
   let variablesShown = 'all';
   /** The file the usage graph last scrolled to. */
   let usageShown = null;
@@ -1649,12 +1702,16 @@ async function editorView(id, isCurrent) {
   const newPolicyButton = h('button', {type: 'button', onclick: () => policyDialog(null)}, 'New policy');
   let pageElement = null;
   const composeButton = h('button', {type: 'button', onclick: () => composeDialog()}, 'Compose');
+  const goToFileButton = h('button', {type: 'button', title: 'Ctrl/Cmd+P', onclick: () => quickOpen()}, 'Go to file');
   const renameButton = h('button', {type: 'button', onclick: () => renameDialog(activePolicy()?.name)}, 'Rename policy');
   const rail = h('aside', {class: 'editor-rail', 'aria-label': 'Flow'});
   const tree = h('nav', {class: 'editor-tree', 'aria-label': 'Files'});
   const tabBar = h('div', {class: 'editor-tabs', role: 'tablist'});
   const host = h('div', {class: 'editor-host'});
-  const problemsHead = h('div', {class: 'editor-problems-head'});
+  const problemsChips = h('div', {class: 'editor-problems-chips'});
+  const problemsFilter = h('input', {type: 'search', placeholder: 'Filter by rule, text or file', 'aria-label': 'Filter the problems',
+    oninput: () => renderProblems()});
+  const problemsHead = h('div', {class: 'editor-problems-head'}, problemsChips, problemsFilter);
   const problemsList = h('div', {class: 'editor-problems-list'});
   const problemsPanel = h('div', {class: 'editor-problems'}, problemsHead, problemsList);
   const variablesChips = h('div', {});
@@ -1662,15 +1719,33 @@ async function editorView(id, isCurrent) {
     oninput: () => renderVariables()});
   const variablesHead = h('div', {class: 'editor-problems-head'}, variablesChips, variablesFilter);
   const variablesList = h('div', {class: 'editor-problems-list'});
+  const policiesFilter = h('input', {type: 'search', placeholder: 'Filter by name or type', 'aria-label': 'Filter the policies',
+    oninput: () => renderPolicies()});
+  const policiesHead = h('div', {class: 'editor-problems-head'}, policiesFilter);
   const policiesList = h('div', {class: 'editor-problems-list'});
-  const usageHead = h('div', {class: 'editor-problems-head meta'});
+  const searchInput = h('input', {type: 'search', placeholder: 'Text to find', 'aria-label': 'Text to find in the proxy',
+    onkeydown: e => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      runSearch();
+    }});
+  const searchButton = h('button', {type: 'button', onclick: () => runSearch()}, 'Search');
+  const searchSummary = h('span', {class: 'meta'});
+  const searchHead = h('div', {class: 'editor-problems-head'}, searchInput, searchButton, searchSummary);
+  const searchList = h('div', {class: 'editor-problems-list'},
+    h('p', {class: 'meta'}, 'Finds a text in every file of the proxy and its shared flows, unsaved changes included.'));
+  const usageSummary = h('span', {class: 'meta'});
+  const usageFilter = h('input', {type: 'search', placeholder: 'Filter by policy', 'aria-label': 'Filter the steps by policy',
+    oninput: () => renderUsage()});
+  const usageHead = h('div', {class: 'editor-problems-head'}, usageSummary, usageFilter);
   const usageGraph = h('div', {class: 'editor-graph'});
   const usageTip = h('div', {class: 'editor-graph-tip', hidden: true});
   const panels = [
     {key: 'problems', title: 'Problems', element: problemsPanel},
     {key: 'simulate', title: 'Simulate', element: simulationPanel()},
+    {key: 'search', title: 'Search', element: h('div', {class: 'editor-problems'}, searchHead, searchList)},
     {key: 'variables', title: 'Variables', element: h('div', {class: 'editor-problems'}, variablesHead, variablesList)},
-    {key: 'policies', title: 'Policies', element: policiesList},
+    {key: 'policies', title: 'Policies', element: h('div', {class: 'editor-problems'}, policiesHead, policiesList)},
     {key: 'usage', title: 'Usage', element: h('div', {class: 'editor-problems'}, usageHead, usageGraph)},
   ];
   const panelBar = h('div', {class: 'editor-tabs'});
@@ -1744,10 +1819,18 @@ async function editorView(id, isCurrent) {
     const all = problems();
     const file = active && opened.get(active);
     const here = all.filter(p => file && p.bundle === file.bundle && p.file === file.path);
-    const shown = scope === 'file' ? here : [...all, ...general];
-    problemsHead.replaceChildren(
+    const scoped = scope === 'file' ? here : [...all, ...general];
+    const text = problemsFilter.value.trim().toLowerCase();
+    const found = scoped.filter(p => [p.rule, p.message, p.action, p.file && label(p)].some(s => s?.toLowerCase().includes(text)));
+    const count = value => found.filter(p => p.severity === value).length;
+    const shown = severityShown === 'all' ? found : found.filter(p => p.severity === severityShown);
+    problemsChips.replaceChildren(
       chips([['all', 'All ' + (all.length + general.length)], ['file', 'This file ' + here.length]], scope, value => {
         scope = value || 'all';
+        renderProblems();
+      }),
+      chips([['all', 'Any'], ['ERROR', 'Errors ' + count('ERROR')], ['WARN', 'Warnings ' + count('WARN')], ['INFO', 'Info ' + count('INFO')]], severityShown, value => {
+        severityShown = value;
         renderProblems();
       }));
     problemsList.replaceChildren(...(shown.length ? shown.map(p => {
@@ -1760,7 +1843,7 @@ async function editorView(id, isCurrent) {
           h('span', {class: 'text', title: p.action || ''}, p.message),
           h('span', {class: 'mono place'}, place)),
         p.rule ? h('button', {type: 'button', class: 'link', onclick: () => fixProblem(p)}, 'Fix') : null);
-    }) : [h('p', {class: 'meta'}, 'Nothing to report.')]));
+    }) : [h('p', {class: 'meta'}, scoped.length ? 'No problem matches this filter.' : 'Nothing to report.')]));
   }
 
   function renderMarkers() {
@@ -1865,7 +1948,7 @@ async function editorView(id, isCurrent) {
     usageTip.hidden = true;
     const file = active && opened.get(active);
     if (!outline) {
-      usageHead.replaceChildren('The graph shows once the proxy can be analyzed.');
+      usageSummary.replaceChildren('The graph shows once the proxy can be analyzed.');
       usageGraph.replaceChildren();
       return;
     }
@@ -1874,7 +1957,7 @@ async function editorView(id, isCurrent) {
       && (step.file === file.path || step.resources.includes(file.path) || sharedSteps);
     const tree = usageTree(used, file);
     if (!tree.children.length) {
-      usageHead.replaceChildren('No flow has a step.');
+      usageSummary.replaceChildren('No flow has a step.');
       usageGraph.replaceChildren();
       return;
     }
@@ -1884,9 +1967,14 @@ async function editorView(id, isCurrent) {
     const uses = out.nodes.filter(n => n.on).length;
     const name = file ? file.path.slice(file.path.lastIndexOf('/') + 1) : null;
     const policyFile = file && /^policies\//.test(file.path);
-    usageHead.replaceChildren(!file ? 'Open a policy to see where it runs.'
+    const wanted = usageFilter.value.trim().toLowerCase();
+    out.nodes.forEach(node => { node.match = !!wanted && node.step.policy.toLowerCase().includes(wanted); });
+    const matching = out.nodes.filter(n => n.match).length;
+    usageSummary.replaceChildren((!file ? 'Open a policy to see where it runs.'
       : uses ? name + ': ' + uses + (uses === 1 ? ' step' : ' steps')
-      : policyFile ? name + ': not attached to a flow' : name + ': no step uses this file');
+      : policyFile ? name + ': not attached to a flow' : name + ': no step uses this file')
+      + (wanted ? ' · ' + matching + (matching === 1 ? ' step matches' : ' steps match') : ''));
+    usageGraph.classList.toggle('filtering', !!wanted);
     usageGraph.replaceChildren(svg('svg', {width: tree.w + 16, height: tree.h + 8, role: 'group', 'aria-label': 'Flow steps'},
       ...out.boxes.map(b => svg('rect', {class: 'shared', x: b.x, y: b.y, width: b.w, height: b.h, rx: 6})),
       svg('path', {class: 'edge', d: out.edges.join('')}),
@@ -1897,6 +1985,7 @@ async function editorView(id, isCurrent) {
       usageShown = active;
       if (panel === 'usage') revealUsage();
     }
+    if (wanted) usageGraph.querySelector('.match')?.scrollIntoView({block: 'nearest', inline: 'center'});
   }
 
   /** Shows the tooltip above a place of the page. */
@@ -1939,7 +2028,7 @@ async function editorView(id, isCurrent) {
       bundle === root ? null : h('div', {}, 'In ' + bundle),
       step.condition ? h('div', {class: 'mono'}, 'If ' + step.condition) : null);
     const element = withTip(svg('circle', {cx: node.x, cy: node.y, r: node.on ? GRAPH.radius + 1 : GRAPH.radius, tabindex: 0, role: 'button', 'aria-label': step.policy,
-      class: 'node' + (node.on ? ' on' : '') + (step.condition ? ' conditional' : '') + (step.enabled ? '' : ' off') + (step.file ? '' : ' missing')}), content);
+      class: 'node' + (node.on ? ' on' : '') + (node.match ? ' match' : '') + (step.condition ? ' conditional' : '') + (step.enabled ? '' : ' off') + (step.file ? '' : ' missing')}), content);
     element.addEventListener('click', openStep);
     element.addEventListener('keydown', event => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -1988,17 +2077,111 @@ async function editorView(id, isCurrent) {
 
   function renderPolicies() {
     const all = [...(outline?.policies || [])].sort((a, b) => (a.order < 0) - (b.order < 0) || a.order - b.order);
-    if (!all.length) {
-      policiesList.replaceChildren(h('p', {class: 'meta'}, outline ? 'This proxy has no policy.' : 'The policies show once the proxy can be analyzed.'));
+    const text = policiesFilter.value.trim().toLowerCase();
+    const shown = all.filter(p => (p.name + ' ' + p.type).toLowerCase().includes(text));
+    if (!shown.length) {
+      policiesList.replaceChildren(h('p', {class: 'meta'}, !outline ? 'The policies show once the proxy can be analyzed.'
+        : all.length ? 'No policy matches this filter.' : 'This proxy has no policy.'));
       return;
     }
     policiesList.replaceChildren(h('table', {class: 'editor-outline-table'},
       h('thead', {}, h('tr', {}, h('th', {}, 'Policy'), h('th', {}, 'Type'), h('th', {}, 'Attached to'))),
-      h('tbody', {}, all.map(p => h('tr', {},
+      h('tbody', {}, shown.map(p => h('tr', {},
         h('td', {}, h('button', {type: 'button', class: 'link', onclick: () => open(root, p.file, true)}, p.name),
           p.enabled ? null : h('span', {class: 'badge'}, 'disabled')),
         h('td', {}, p.type),
         h('td', {}, p.attachments.length ? p.attachments.join(', ') : h('span', {class: 'badge warn'}, 'not attached')))))));
+  }
+
+  /** Opens the Search tab, with the text selected in the editor when it holds one line. */
+  function focusSearch() {
+    const selected = editor.getModel()?.getValueInRange(editor.getSelection());
+    if (selected && !selected.includes('\n')) searchInput.value = selected;
+    showPanel('search');
+    searchInput.focus();
+    searchInput.select();
+  }
+
+  async function runSearch() {
+    if (!searchInput.value) return;
+    searchButton.disabled = true;
+    try {
+      const result = await api.editorSearch(id, {text: searchInput.value, buffers: buffers()});
+      if (isCurrent()) renderSearch(result);
+    } catch (error) {
+      searchSummary.textContent = '';
+      searchList.replaceChildren(errorBox(error));
+    } finally {
+      searchButton.disabled = false;
+    }
+  }
+
+  function renderSearch({matches, truncated}) {
+    const files = new Map();
+    for (const match of matches) {
+      const place = label(match);
+      if (!files.has(place)) files.set(place, []);
+      files.get(place).push(match);
+    }
+    searchSummary.textContent = !matches.length ? '' : (truncated ? 'First ' : '') + matches.length + (matches.length === 1 ? ' match' : ' matches')
+      + ' in ' + files.size + (files.size === 1 ? ' file' : ' files');
+    searchList.replaceChildren(...(matches.length ? [...files].map(([place, here]) => h('section', {},
+      h('div', {class: 'editor-folder mono'}, place),
+      here.map(m => h('button', {type: 'button', class: 'editor-problem',
+          onclick: () => open(m.bundle, m.file, m.bundle === root, {line: m.line, column: m.column, endLine: m.line, endColumn: m.endColumn})},
+        h('span', {class: 'mono meta'}, m.line),
+        h('span', {class: 'mono text'}, m.before, h('mark', {}, m.match), m.after)))))
+      : [h('p', {class: 'meta'}, 'Nothing found.')]));
+  }
+
+  /** Finds a file by words of its path, those in its name first. */
+  function quickOpen() {
+    const files = workspace.bundles.flatMap(bundle => bundle.files
+      .filter(f => f.text && !opened.get(fileKey(bundle.name, f.path))?.deleted)
+      .map(f => ({bundle: bundle.name, path: f.path, editable: bundle.editable, name: f.path.slice(f.path.lastIndexOf('/') + 1).toLowerCase()})));
+    let shown = [];
+    let selected = 0;
+    const input = h('input', {type: 'search', class: 'editor-quick-input', placeholder: 'File name', 'aria-label': 'File name',
+      oninput: () => {
+        selected = 0;
+        renderList();
+      },
+      onkeydown: e => {
+        const step = {ArrowDown: 1, ArrowUp: -1}[e.key];
+        if (step && shown.length) {
+          e.preventDefault();
+          selected = (selected + step + shown.length) % shown.length;
+          renderList();
+        } else if (e.key === 'Enter' && shown[selected]) {
+          e.preventDefault();
+          choose(shown[selected]);
+        }
+      }});
+    const list = h('div', {class: 'editor-quick-open'});
+    const dialog = h('dialog', {class: 'wide'}, h('h2', {}, 'Go to file'), input, list);
+    dialog.addEventListener('close', () => dialog.remove());
+
+    function choose(file) {
+      dialog.close();
+      open(file.bundle, file.path, file.editable);
+    }
+
+    function renderList() {
+      const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+      const inName = file => words.some(word => file.name.includes(word));
+      shown = files.filter(f => words.every(word => (f.bundle + '/' + f.path).toLowerCase().includes(word)))
+        .sort((a, b) => inName(b) - inName(a));
+      list.replaceChildren(...(shown.length ? shown.map((file, index) =>
+        h('button', {type: 'button', class: 'editor-file' + (index === selected ? ' on' : ''), onclick: () => choose(file)},
+          h('span', {class: 'name'}, file.path), file.bundle === root ? null : h('span', {class: 'meta'}, file.bundle)))
+        : [h('p', {class: 'meta'}, 'No file matches.')]));
+      list.querySelector('.on')?.scrollIntoView({block: 'nearest'});
+    }
+
+    renderList();
+    document.body.append(dialog);
+    dialog.showModal();
+    input.focus();
   }
 
   /** "name: value" or "name=value" lines as an object. */
@@ -2243,6 +2426,12 @@ async function editorView(id, isCurrent) {
 
   disposables.push(...['xml', 'javascript'].map(language => monaco.languages.registerCompletionItemProvider(language, {
     triggerCharacters: ['.', '{', '>', '"'], provideCompletionItems: provideCompletion})));
+  disposables.push(monaco.languages.registerDocumentFormattingEditProvider('xml', {
+    provideDocumentFormattingEdits(model, options) {
+      const formatted = formatXml(model.getValue(), options.insertSpaces ? ' '.repeat(options.tabSize) : '\t', model.getEOL());
+      if (formatted === null) toast('Fix the XML before formatting it', true);
+      return formatted === null ? [] : [{range: model.getFullModelRange(), text: formatted}];
+    }}));
   disposables.push(...['xml', 'javascript'].map(language => monaco.languages.registerHoverProvider(language, {
     provideHover(model, position) {
       const token = tokenAt(model, position);
@@ -2666,6 +2855,20 @@ async function editorView(id, isCurrent) {
     }
   }
 
+  /** Go to file and Search, wherever the focus is on the page; Ctrl/Cmd+P would otherwise print it. */
+  function onShortcut(event) {
+    if (!(event.ctrlKey || event.metaKey) || document.querySelector('dialog[open]')) return;
+    const key = event.key.toLowerCase();
+    const action = key === 'p' && !event.shiftKey ? quickOpen : key === 'f' && event.shiftKey ? focusSearch : null;
+    if (!action) return;
+    event.preventDefault();
+    event.stopPropagation();
+    action();
+  }
+
+  document.addEventListener('keydown', onShortcut, true);
+  disposables.push({dispose: () => document.removeEventListener('keydown', onShortcut, true)});
+
   leaveGuard = silent => !dirty().length || (!silent && confirm('Discard your unsaved changes?'));
   leaveView = () => {
     clearTimeout(timer);
@@ -2725,7 +2928,7 @@ async function editorView(id, isCurrent) {
       h('a', {href: '#/proxy/' + encodeURIComponent(id)}, '← ' + workspace.proxy),
       status,
       h('span', {class: 'spacer'}),
-      composeButton, renameButton, newPolicyButton, saveButton),
+      goToFileButton, composeButton, renameButton, newPolicyButton, saveButton),
     h('div', {class: 'editor-body'}, tree, h('div', {class: 'editor-main'}, tabBar, host), rail),
     panelSection, usageTip);
 

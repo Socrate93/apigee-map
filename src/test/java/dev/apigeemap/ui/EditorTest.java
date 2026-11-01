@@ -266,6 +266,38 @@ class EditorTest {
     }
 
     @Test
+    void searchesSavedFilesUnsavedTextAndSharedFlows() throws Exception {
+        String proxy = "<ProxyEndpoint name=\"default\">\n    <!-- FindMe here, findme there -->\n</ProxyEndpoint>\n";
+        String body = Json.write(Map.of("text", "findme", "buffers", List.of(
+                Map.of("path", "proxies/default.xml", "content", proxy),
+                Map.of("path", "policies/New.xml", "content", "<AssignMessage name=\"findme\"/>"),
+                Map.of("path", "targets/default.xml", "deleted", true))));
+
+        HttpResponse<String> response = post("/api/editor/search?id=" + ID, body);
+
+        assertEquals(200, response.statusCode(), response.body());
+        List<Map<?, ?>> matches = ((List<?>) ((Map<?, ?>) Json.parse(response.body())).get("matches")).stream()
+                .<Map<?, ?>>map(m -> (Map<?, ?>) m).toList();
+        assertEquals(3, matches.size(), response.body());
+        Map<?, ?> first = matches.stream().filter(m -> m.get("file").equals("proxies/default.xml")).findFirst().orElseThrow();
+        assertEquals(2.0, first.get("line"));
+        assertEquals(10.0, first.get("column"));
+        assertEquals(16.0, first.get("endColumn"));
+        assertEquals("FindMe", first.get("match"));
+        assertEquals("<!-- ", first.get("before"));
+
+        String shared = Json.write(Map.of("text", "<SharedFlow", "buffers", List.of()));
+        String sharedBody = post("/api/editor/search?id=" + ID, shared).body();
+        assertTrue(((List<?>) ((Map<?, ?>) Json.parse(sharedBody)).get("matches")).stream()
+                .anyMatch(m -> ((Map<?, ?>) m).get("bundle").equals("sf-security")), sharedBody);
+    }
+
+    @Test
+    void refusesAnEmptySearch() throws Exception {
+        assertEquals(400, post("/api/editor/search?id=" + ID, Json.write(Map.of("text", ""))).statusCode());
+    }
+
+    @Test
     void refusesToSimulateMalformedXml() throws Exception {
         String body = Json.write(Map.of("buffers", List.of(Map.of("path", "proxies/default.xml", "content", "<ProxyEndpoint>"))));
         assertEquals(409, post("/api/editor/simulate?id=" + ID, body).statusCode());

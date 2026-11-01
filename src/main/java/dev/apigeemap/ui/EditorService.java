@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.stream.Stream;
 
 import org.xml.sax.InputSource;
@@ -55,6 +56,11 @@ final class EditorService {
     private static final List<String> UNSENT_FOLDERS = List.of("resources/node/", "resources/hosted/");
     /** A proxy is sent with a request when its text files hold at most this many characters. */
     private static final long MAX_COMPOSED = 400_000;
+    /** A search stops at this many matches. */
+    private static final int MAX_MATCHES = 500;
+    /** Characters of its line shown around a match. */
+    private static final int SHOWN_BEFORE = 60;
+    private static final int SHOWN_AFTER = 120;
 
     /** A file of a bundle; {@code text} false when it cannot be opened in the editor. */
     record EditorFile(String path, boolean text) {
@@ -76,6 +82,11 @@ final class EditorService {
      */
     record Check(boolean analyzed, List<Problem> problems, List<Problem> general, String error,
                  EditorOutline outline) {
+    }
+
+    /** A text found in a file, at columns counted from 1 as in the editor, with what is around it on its line. */
+    record SearchMatch(String bundle, String file, int line, int column, int endColumn, String before, String match,
+                       String after) {
     }
 
     private final UiService service;
@@ -236,6 +247,52 @@ final class EditorService {
             }
             return Simulator.run(service.analyzer().analyze(BundleLocator.locate(copy)), input(request));
         });
+    }
+
+    /**
+     * Finds {@code text}, whatever its case, in the text files of the proxy as they are with {@code buffers}, and of its
+     * shared flows. Answers {@code {matches, truncated}}.
+     */
+    Map<String, Object> search(String id, Map<?, ?> request) throws IOException {
+        if (!(request.get("text") instanceof String wanted) || wanted.isEmpty()) {
+            throw new UiService.UiException(400, "Say what to find");
+        }
+        Map<String, Buffer> unsaved = new LinkedHashMap<>();
+        buffers(request).forEach(buffer -> unsaved.put(buffer.path(), buffer));
+        List<SearchMatch> matches = new ArrayList<>();
+        Path root = service.bundleDir(id);
+        for (Map.Entry<String, Path> bundle : bundles(id).entrySet()) {
+            boolean own = bundle.getValue().equals(root);
+            Set<String> paths = new TreeSet<>();
+            files(bundle.getValue()).stream().filter(EditorFile::text).forEach(file -> paths.add(file.path()));
+            if (own) paths.addAll(unsaved.keySet());
+            for (String path : paths) {
+                Buffer buffer = own ? unsaved.get(path) : null;
+                if (buffer != null && buffer.deleted()) continue;
+                String text = buffer != null ? buffer.content() : text(bundle.getValue().resolve(path));
+                if (text != null) find(bundle.getKey(), path, text, wanted, matches);
+            }
+        }
+        return Map.of("matches", matches, "truncated", matches.size() >= MAX_MATCHES);
+    }
+
+    private static void find(String bundle, String file, String text, String wanted, List<SearchMatch> matches) {
+        String[] lines = text.split("\r\n|\r|\n", -1);
+        for (int index = 0; index < lines.length; index++) {
+            String line = lines[index];
+            int at = 0;
+            while (at + wanted.length() <= line.length() && matches.size() < MAX_MATCHES) {
+                if (!line.regionMatches(true, at, wanted, 0, wanted.length())) {
+                    at++;
+                    continue;
+                }
+                int end = at + wanted.length();
+                matches.add(new SearchMatch(bundle, file, index + 1, at + 1, end + 1,
+                        line.substring(Math.max(0, at - SHOWN_BEFORE), at).stripLeading(), line.substring(at, end),
+                        line.substring(end, Math.min(line.length(), end + SHOWN_AFTER))));
+                at = end;
+            }
+        }
     }
 
     private static Simulation.Input input(Map<?, ?> request) {
