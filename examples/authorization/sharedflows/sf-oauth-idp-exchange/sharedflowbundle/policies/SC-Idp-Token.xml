@@ -1,0 +1,16 @@
+<ServiceCallout async="false" continueOnError="true" enabled="true" name="SC-Idp-Token">
+    <Request variable="idpTokenRequest"/>
+    <Response>idpTokenResponse</Response>
+    <Timeout>5000</Timeout>
+    <HTTPTargetConnection>
+        <LoadBalancer>
+            <Server name="idp-server-1"/>
+            <Server name="idp-server-2"/>
+        </LoadBalancer>
+        <Path>/token</Path>
+        <SSLInfo>
+            <Enabled>true</Enabled>
+            <TrustStore>ref://idp-truststore-ref</TrustStore>
+        </SSLInfo>
+    </HTTPTargetConnection>
+</ServiceCallout>

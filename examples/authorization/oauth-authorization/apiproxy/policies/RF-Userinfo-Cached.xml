@@ -1,0 +1,9 @@
+<RaiseFault async="false" continueOnError="false" enabled="true" name="RF-Userinfo-Cached">
+    <FaultResponse>
+        <Set>
+            <StatusCode>200</StatusCode>
+            <Payload contentType="application/json">{userinfo.json}</Payload>
+        </Set>
+    </FaultResponse>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</RaiseFault>

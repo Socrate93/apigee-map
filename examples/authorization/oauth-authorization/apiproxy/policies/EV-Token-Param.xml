@@ -1,0 +1,7 @@
+<ExtractVariables async="false" continueOnError="false" enabled="true" name="EV-Token-Param">
+    <Source>request</Source>
+    <VariablePrefix>param</VariablePrefix>
+    <FormParam name="token"><Pattern ignoreCase="false">{token}</Pattern></FormParam>
+    <FormParam name="token_type_hint"><Pattern ignoreCase="false">{token_type_hint}</Pattern></FormParam>
+    <IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>
+</ExtractVariables>

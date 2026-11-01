@@ -1,0 +1,12 @@
+<ExtractVariables async="false" continueOnError="false" enabled="true" name="EV-Authorize-Params">
+    <Source>request</Source>
+    <VariablePrefix>authorize</VariablePrefix>
+    <QueryParam name="response_type"><Pattern ignoreCase="false">{response_type}</Pattern></QueryParam>
+    <QueryParam name="redirect_uri"><Pattern ignoreCase="false">{redirect_uri}</Pattern></QueryParam>
+    <QueryParam name="scope"><Pattern ignoreCase="false">{scope}</Pattern></QueryParam>
+    <QueryParam name="state"><Pattern ignoreCase="false">{state}</Pattern></QueryParam>
+    <QueryParam name="nonce"><Pattern ignoreCase="false">{nonce}</Pattern></QueryParam>
+    <QueryParam name="code_challenge"><Pattern ignoreCase="false">{code_challenge}</Pattern></QueryParam>
+    <QueryParam name="code_challenge_method"><Pattern ignoreCase="false">{code_challenge_method}</Pattern></QueryParam>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</ExtractVariables>

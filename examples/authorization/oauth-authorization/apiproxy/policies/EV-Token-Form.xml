@@ -1,0 +1,10 @@
+<ExtractVariables async="false" continueOnError="false" enabled="true" name="EV-Token-Form">
+    <Source>request</Source>
+    <VariablePrefix>token</VariablePrefix>
+    <FormParam name="grant_type"><Pattern ignoreCase="false">{grant_type}</Pattern></FormParam>
+    <FormParam name="code"><Pattern ignoreCase="false">{code}</Pattern></FormParam>
+    <FormParam name="code_verifier"><Pattern ignoreCase="false">{code_verifier}</Pattern></FormParam>
+    <FormParam name="assertion"><Pattern ignoreCase="false">{assertion}</Pattern></FormParam>
+    <FormParam name="username"><Pattern ignoreCase="false">{username}</Pattern></FormParam>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</ExtractVariables>

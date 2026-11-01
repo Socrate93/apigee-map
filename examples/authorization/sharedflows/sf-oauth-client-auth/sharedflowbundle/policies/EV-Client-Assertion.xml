@@ -1,0 +1,6 @@
+<ExtractVariables async="false" continueOnError="false" enabled="true" name="EV-Client-Assertion">
+    <Source>request</Source>
+    <VariablePrefix>client</VariablePrefix>
+    <FormParam name="client_assertion"><Pattern ignoreCase="false">{assertion}</Pattern></FormParam>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</ExtractVariables>

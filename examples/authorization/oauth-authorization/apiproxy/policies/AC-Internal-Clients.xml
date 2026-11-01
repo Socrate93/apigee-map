@@ -1,0 +1,8 @@
+<AccessControl async="false" continueOnError="false" enabled="true" name="AC-Internal-Clients">
+    <IPRules noRuleMatchAction="DENY">
+        <MatchRule action="ALLOW">
+            <SourceAddress mask="8">10.0.0.0</SourceAddress>
+            <SourceAddress mask="32">127.0.0.1</SourceAddress>
+        </MatchRule>
+    </IPRules>
+</AccessControl>

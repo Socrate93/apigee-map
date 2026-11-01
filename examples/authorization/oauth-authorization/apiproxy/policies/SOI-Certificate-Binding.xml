@@ -1,0 +1,6 @@
+<SetOAuthV2Info async="false" continueOnError="false" enabled="true" name="SOI-Certificate-Binding">
+    <AccessToken ref="oauthv2accesstoken.OA-Token-Client-Credentials.access_token"/>
+    <Attributes>
+        <Attribute name="cnf_x5t" ref="client.cert.thumbprint"/>
+    </Attributes>
+</SetOAuthV2Info>

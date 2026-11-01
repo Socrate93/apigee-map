@@ -1,0 +1,11 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Saml-Payload">
+    <AssignVariable>
+        <Name>saml.flow_type</Name>
+        <Value>client_credentials</Value>
+    </AssignVariable>
+    <Set>
+        <Payload contentType="application/xml">{token.assertion}</Payload>
+    </Set>
+    <AssignTo createNew="true" transport="http" type="request">samlRequest</AssignTo>
+    <IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>
+</AssignMessage>

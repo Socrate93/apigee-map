@@ -1,0 +1,8 @@
+<InvalidateCache async="false" continueOnError="true" enabled="true" name="IC-Userinfo">
+    <CacheKey>
+        <Prefix>userinfo</Prefix>
+        <KeyFragment ref="param.token"/>
+    </CacheKey>
+    <CacheResource>oauth-cache</CacheResource>
+    <Scope>Environment</Scope>
+</InvalidateCache>

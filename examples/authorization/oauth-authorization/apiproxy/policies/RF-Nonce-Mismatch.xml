@@ -1,0 +1,9 @@
+<RaiseFault async="false" continueOnError="false" enabled="true" name="RF-Nonce-Mismatch">
+    <FaultResponse>
+        <Set>
+            <StatusCode>400</StatusCode>
+            <Payload contentType="application/json">{"error": "invalid_request", "error_description": "The nonce of the ID token does not match"}</Payload>
+        </Set>
+    </FaultResponse>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</RaiseFault>

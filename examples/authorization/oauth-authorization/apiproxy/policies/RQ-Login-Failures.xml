@@ -1,0 +1,7 @@
+<ResetQuota async="false" continueOnError="true" enabled="true" name="RQ-Login-Failures">
+    <Quota name="Q-Login-Failures">
+        <Identifier ref="token.username">
+            <Allow>5</Allow>
+        </Identifier>
+    </Quota>
+</ResetQuota>

@@ -1,0 +1,15 @@
+<GenerateJWT async="false" continueOnError="false" enabled="true" name="GJ-Id-Token">
+    <Algorithm>RS256</Algorithm>
+    <PrivateKey>
+        <Value ref="private.jwt.signing_key"/>
+        <Id ref="jwt.key_id"/>
+    </PrivateKey>
+    <Subject ref="oauthv2authcode.GOI-Code.sub"/>
+    <Issuer ref="oauth.issuer"/>
+    <Audience ref="client.id"/>
+    <ExpiresIn>30m</ExpiresIn>
+    <AdditionalClaims>
+        <Claim name="nonce" ref="oauthv2authcode.GOI-Code.nonce"/>
+    </AdditionalClaims>
+    <OutputVariable>token.id_token</OutputVariable>
+</GenerateJWT>

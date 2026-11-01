@@ -192,7 +192,7 @@ let currentHash = location.hash;
 /** Renders the view for the current hash; results of a previous, slower render are dropped. */
 async function route() {
   const [name = 'proxies', ...rest] = location.hash.replace(/^#\/?/, '').split('/');
-  const routes = {proxies: proxiesView, proxy: proxyView, editor: editorView, overview: overviewView, settings: settingsView};
+  const routes = {proxies: proxiesView, proxy: proxyView, editor: editorView, overview: overviewView, idp: idpView, settings: settingsView};
   const render = routes[name] || proxiesView;
   document.querySelectorAll('[data-nav]').forEach(a =>
     a.classList.toggle('active', a.dataset.nav === (name === 'proxy' || name === 'editor' ? 'proxies' : name)));
@@ -2985,6 +2985,275 @@ async function overviewView() {
       h('td', {class: 'nowrap'}, r.kind), h('td', {}, h('code', {}, r.name)), h('td', {class: 'sub'}, r.details),
       h('td', {title: r.proxies.join(', ')}, shown, r.proxies.length > 5 ? h('span', {class: 'sub'}, ' +' + (r.proxies.length - 5) + ' more') : null));
   })) : empty('Nothing to create.'));
+  return page;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Mock IdP
+// ---------------------------------------------------------------------------------------------------------------
+
+const IDP_TRANSPORTS = {
+  http: ['HTTP', 'No TLS.'],
+  tls: ['TLS', 'Server certificate only.'],
+  'mtls-optional': ['mTLS, optional', 'A client certificate is asked for, and used when one comes.'],
+  'mtls-required': ['mTLS, required', 'A connection without a client certificate is refused during the handshake.'],
+};
+const IDP_GRANTS = {authorization_code: 'Authorization code', implicit: 'Implicit', client_credentials: 'Client credentials',
+  password: 'Resource owner password', refresh_token: 'Refresh token', device_code: 'Device code (RFC 8628)',
+  token_exchange: 'Token exchange (RFC 8693)', jwt_bearer: 'JWT bearer (RFC 7523)'};
+const IDP_FAULT_ENDPOINTS = ['', 'all', '/authorize', '/token', '/introspect', '/revoke', '/userinfo', '/jwks',
+  '/.well-known/openid-configuration'];
+const IDP_ENDPOINTS = [['Discovery', '/.well-known/openid-configuration'], ['Metadata', '/.well-known/oauth-authorization-server'],
+  ['Authorize', '/authorize'], ['Token', '/token'], ['Pushed requests', '/par'], ['Introspection', '/introspect'],
+  ['Revocation', '/revoke'], ['User info', '/userinfo'], ['JWKS', '/jwks'], ['Device', '/device_authorization'], ['Logout', '/logout']];
+
+async function idpView() {
+  const page = h('div', {});
+  let data = await request('GET', '/api/idp');
+  let draft = JSON.parse(JSON.stringify(data.config));
+  let saved = JSON.stringify(draft);
+  const dirty = () => JSON.stringify(draft) !== saved;
+  leaveGuard = silent => !dirty() || (!silent && confirm('Discard your unsaved Mock IdP settings?'));
+
+  const saveButton = h('button', {type: 'button', class: 'primary', onclick: save}, 'Save settings');
+  const discardButton = h('button', {type: 'button', onclick: () => { draft = JSON.parse(saved); render(); }}, 'Discard changes');
+  const changed = () => { saveButton.disabled = !dirty(); discardButton.disabled = !dirty(); };
+
+  async function act(path, message) {
+    try {
+      data = await request('POST', path);
+      if (message) toast(message);
+      refreshKept();
+    } catch (error) {
+      toast(error.message, true);
+      data = await request('GET', '/api/idp');
+      refreshKept();
+    }
+  }
+
+  async function save() {
+    saveButton.disabled = true;
+    try {
+      data = await request('PUT', '/api/idp', draft);
+      draft = JSON.parse(JSON.stringify(data.config));
+      saved = JSON.stringify(draft);
+      toast(data.running ? 'Settings saved, server restarted' : 'Settings saved');
+      render();
+    } catch (error) {
+      toast(error.message, true);
+      changed();
+    }
+  }
+
+  // what comes from the server, redrawn without touching the fields being edited
+  const statusBox = h('div', {});
+  const endpointsBox = h('div', {});
+  const logBox = h('div', {});
+  function refreshKept() {
+    statusBox.replaceChildren(statusSection());
+    endpointsBox.replaceChildren(endpointsSection());
+    logBox.replaceChildren(logSection());
+  }
+
+  function statusSection() {
+    const badge = data.running ? h('span', {class: 'badge ok'}, 'Running') : h('span', {class: 'badge'}, 'Stopped');
+    return h('div', {},
+      h('div', {class: 'head'},
+        h('div', {}, h('h1', {}, 'Mock IdP'),
+          h('p', {class: 'meta'}, 'An OAuth 2.0 and OpenID Connect server for tests, on this computer only.')),
+        h('div', {class: 'actions'},
+          data.running ? h('button', {type: 'button', onclick: () => act('/api/idp/stop', 'Mock IdP stopped')}, 'Stop')
+            : h('button', {type: 'button', class: 'primary', onclick: () => act('/api/idp/start', 'Mock IdP started')}, 'Start'))),
+      h('div', {class: 'idp-status'}, badge,
+        data.running ? h('code', {}, data.url) : null,
+        data.running ? h('span', {class: 'sub'}, IDP_TRANSPORTS[data.config.transport][0]) : null,
+        h('span', {class: 'sub'}, data.tokens + ' token(s) issued')),
+      data.error ? errorBox({message: data.error}) : null);
+  }
+
+  function endpointsSection() {
+    const base = data.issuer || (draft.transport === 'http' ? 'http' : 'https') + '://localhost:' + draft.port;
+    const c = data.certificates;
+    const mtls = data.config.transport.startsWith('mtls');
+    const curlTls = data.config.transport === 'http' ? '' : ' --cacert ' + c.ca + (mtls ? ' --cert ' + c.certificate + ' --key ' + c.key : '');
+    return h('section', {class: 'form-section'}, h('h2', {}, 'Endpoints'),
+      h('p', {class: 'meta', style: 'margin:-4px 0 12px'}, 'Set the issuer, the authorize address and the JWKS address of these in the KVM oauth-idp of the proxy.'),
+      table(['', 'Address'], IDP_ENDPOINTS.map(([label, path]) =>
+        h('tr', {}, h('td', {class: 'nowrap'}, label), h('td', {}, h('code', {}, base + path))))),
+      h('h3', {}, 'Try it'),
+      h('pre', {class: 'idp-sample'}, 'curl' + curlTls + ' -u demo-client:demo-secret -d grant_type=client_credentials ' + base + '/token'),
+      data.config.transport === 'http' ? null : [
+        h('h3', {}, 'Certificates'),
+        h('p', {class: 'meta', style: 'margin:-4px 0 12px'}, 'Made on the first start with TLS, for tests on this computer. The password of the keystore is mock-idp.'),
+        table(['', 'File'], [['Authority', c.ca], ['Client certificate', c.certificate], ['Client key', c.key], ['Client keystore', c.keystore], ['Client subject', c.subject]]
+          .map(([label, value]) => h('tr', {}, h('td', {class: 'nowrap'}, label), h('td', {}, h('code', {}, value)))))]);
+  }
+
+  function logSection() {
+    const time = at => new Date(at).toLocaleTimeString();
+    return h('section', {class: 'form-section'},
+      h('div', {class: 'head'}, h('h2', {}, 'Requests'),
+        h('div', {class: 'actions'},
+          h('button', {type: 'button', onclick: async () => { data = await request('GET', '/api/idp'); refreshKept(); }}, 'Refresh'),
+          h('button', {type: 'button', onclick: () => act('/api/idp/clear', 'Tokens and requests cleared')}, 'Clear tokens and requests'))),
+      data.log.length ? table(['Time', 'Call', 'Status', 'Client', 'Grant', 'Certificate', 'Error', {label: 'ms', class: 'num'}],
+        data.log.map(entry => h('tr', {},
+          h('td', {class: 'nowrap sub'}, time(entry.time)),
+          h('td', {class: 'nowrap'}, h('code', {}, entry.method + ' ' + entry.path)),
+          h('td', {}, h('span', {class: entry.status >= 400 ? 'ERROR' : ''}, entry.status)),
+          h('td', {}, entry.client), h('td', {}, entry.grant), h('td', {class: 'sub'}, entry.certificate),
+          h('td', {}, entry.error), h('td', {class: 'num'}, entry.ms))))
+        : h('p', {class: 'sub'}, 'No request yet. They are listed here without their parameters.'));
+  }
+
+  // fields
+  function field(label, hint, control) {
+    return h('div', {class: 'field'}, h('label', {}, label), hint ? h('p', {class: 'hint'}, hint) : null, control);
+  }
+  function text(key, attrs) {
+    return h('input', {type: 'text', value: draft[key], spellcheck: 'false', 'aria-label': key, ...attrs,
+      oninput: e => { draft[key] = e.target.value; changed(); }});
+  }
+  function number(key, attrs) {
+    return h('input', {type: 'number', value: draft[key], 'aria-label': key, ...attrs,
+      oninput: e => { draft[key] = Number(e.target.value); changed(); }});
+  }
+  function pick(key, options) {
+    return h('select', {'aria-label': key, onchange: e => { draft[key] = e.target.value; changed(); }},
+      options.map(([value, label]) => h('option', {value, selected: draft[key] === value}, label)));
+  }
+  function check(key, label, hint) {
+    return h('label', {class: 'idp-check'}, h('input', {type: 'checkbox', checked: draft[key],
+      onchange: e => { draft[key] = e.target.checked; changed(); }}),
+      h('span', {}, label, hint ? h('small', {class: 'sub'}, ' ' + hint) : null));
+  }
+  function many(key, options, labels) {
+    return h('div', {class: 'idp-checks'}, options.map(option => h('label', {class: 'idp-check'},
+      h('input', {type: 'checkbox', checked: draft[key].includes(option), onchange: e => {
+        draft[key] = options.filter(o => o === option ? e.target.checked : draft[key].includes(o));
+        changed();
+      }}), h('span', {}, labels ? labels[option] : option))));
+  }
+  function list(target, key, label) {
+    return h('input', {type: 'text', value: target[key].join(' '), spellcheck: 'false', 'aria-label': label,
+      oninput: e => { target[key] = e.target.value.split(/\s+/).filter(Boolean); changed(); }});
+  }
+
+  const options = data.options;
+  function clientCard(client, index) {
+    const value = (key, label, attrs) => h('div', {class: 'field'}, h('label', {}, label),
+      h('input', {type: 'text', value: client[key], spellcheck: 'false', 'aria-label': label + ' of client ' + (index + 1), ...attrs,
+        oninput: e => { client[key] = e.target.value; changed(); }}));
+    const extra = h('div', {});
+    const fillExtra = () => {
+      const method = client.authMethod;
+      extra.replaceChildren(...[
+        method.startsWith('client_secret') ? value('secret', 'Secret', {type: 'password', autocomplete: 'off'}) : null,
+        method === 'tls_client_auth' ? value('tlsSubject', 'Certificate subject') : null,
+        method === 'private_key_jwt' ? h('div', {class: 'field'}, h('label', {}, 'Public key (PEM)'),
+          h('textarea', {rows: 4, spellcheck: 'false', 'aria-label': 'Public key of client ' + (index + 1),
+            oninput: e => { client.publicKey = e.target.value; changed(); }}, client.publicKey)) : null].filter(Boolean));
+    };
+    fillExtra();
+    return h('div', {class: 'idp-card'},
+      h('div', {class: 'idp-grid'}, value('id', 'Client id'),
+        h('div', {class: 'field'}, h('label', {}, 'Authentication'),
+          h('select', {'aria-label': 'Authentication of client ' + (index + 1),
+            onchange: e => { client.authMethod = e.target.value; fillExtra(); changed(); }},
+            options.authMethods.map(m => h('option', {value: m, selected: client.authMethod === m}, m))))),
+      extra,
+      h('div', {class: 'field'}, h('label', {}, 'Redirect URIs'), list(client, 'redirectUris', 'Redirect URIs of client ' + (index + 1))),
+      h('div', {class: 'idp-grid'},
+        h('div', {class: 'field'}, h('label', {}, 'Grants'), h('p', {class: 'hint'}, 'Empty: all those enabled.'), list(client, 'grants', 'Grants of client ' + (index + 1))),
+        h('div', {class: 'field'}, h('label', {}, 'Scopes'), h('p', {class: 'hint'}, 'Empty: all of them.'), list(client, 'scopes', 'Scopes of client ' + (index + 1)))),
+      h('button', {type: 'button', onclick: () => { draft.clients.splice(index, 1); render(); changed(); }}, 'Remove client'));
+  }
+
+  function userRow(user, index) {
+    const value = (key, label, attrs) => h('td', {}, h('input', {type: 'text', value: user[key], spellcheck: 'false',
+      'aria-label': label + ' of user ' + (index + 1), ...attrs, oninput: e => { user[key] = e.target.value; changed(); }}));
+    return h('tr', {}, value('username', 'Name'), value('password', 'Password', {type: 'password', autocomplete: 'off'}),
+      value('sub', 'Subject'), value('name', 'Full name'), value('email', 'Email'),
+      h('td', {}, h('button', {type: 'button', onclick: () => { draft.users.splice(index, 1); render(); changed(); }}, 'Remove')));
+  }
+
+  function claimsField() {
+    const area = h('textarea', {rows: 3, spellcheck: 'false', 'aria-label': 'Extra claims', oninput: () => {
+      try {
+        const value = JSON.parse(area.value || '{}');
+        if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error();
+        draft.extraClaims = value;
+        area.classList.remove('bad');
+        changed();
+      } catch (error) {
+        area.classList.add('bad');
+        saveButton.disabled = true;
+      }
+    }}, JSON.stringify(draft.extraClaims, null, 2));
+    return field('Extra claims', 'A JSON object added to each JWT access token.', area);
+  }
+
+  function render() {
+    refreshKept();
+    const settings = h('div', {},
+      h('section', {class: 'form-section'}, h('h2', {}, 'Transport'),
+        h('div', {class: 'idp-grid'},
+          field('Protocol', IDP_TRANSPORTS[draft.transport][1], pick('transport', Object.entries(IDP_TRANSPORTS).map(([v, [l]]) => [v, l]))),
+          field('Port', 'Always on 127.0.0.1.', number('port', {min: 0, max: 65535})),
+          field('Issuer', 'Empty: the address of the server. Set it when the proxy reaches it under another name.', text('issuer', {placeholder: 'https://localhost:8766'}))),
+        check('boundTokens', 'Certificate-bound access tokens (RFC 8705)', 'cnf.x5t#S256, checked at the user info endpoint.')),
+      h('section', {class: 'form-section'}, h('h2', {}, 'Grants and client authentication'),
+        field('Enabled grants', null, many('grants', options.grants, IDP_GRANTS)),
+        field('Client authentication methods', 'A client uses the one it is registered with, and only when it is enabled here.', many('authMethods', options.authMethods))),
+      h('section', {class: 'form-section'}, h('h2', {}, 'Authorization'),
+        h('div', {class: 'idp-grid'},
+          field('Login', 'Automatic logs in the first user, or the login_hint.', pick('login', [['auto', 'Automatic'], ['form', 'Login form']])),
+          field('PKCE', null, pick('pkce', [['off', 'Off'], ['optional', 'Optional'], ['required', 'Required']]))),
+        field('PKCE methods', null, many('pkceMethods', options.pkceMethods)),
+        field('Response modes', null, many('responseModes', options.responseModes)),
+        check('consent', 'Ask for consent', 'Shows a page with Allow and Deny.'),
+        check('requirePar', 'Require pushed authorization requests (RFC 9126)'),
+        check('introspectionAuth', 'Introspection needs client authentication')),
+      h('section', {class: 'form-section'}, h('h2', {}, 'Tokens'),
+        h('div', {class: 'idp-grid'},
+          field('Access token format', null, pick('tokenFormat', [['jwt', 'JWT'], ['opaque', 'Opaque']])),
+          field('Signing algorithm', 'Access and ID tokens. RS256, PS256 and ES256 keys are in the JWKS.', pick('signingAlg', options.signingAlgs.map(a => [a, a]))),
+          field('Token type', null, text('tokenType')),
+          field('Audience', 'Empty: the client id.', text('audience')),
+          draft.signingAlg === 'HS256' ? field('HS256 secret', 'At least 32 characters.', text('hmacSecret', {type: 'password', autocomplete: 'off'})) : null),
+        h('div', {class: 'idp-grid'},
+          field('Access token (s)', null, number('accessTokenTtl', {min: 1})),
+          field('Refresh token (s)', null, number('refreshTokenTtl', {min: 1})),
+          field('ID token (s)', null, number('idTokenTtl', {min: 1})),
+          field('Authorization code (s)', null, number('codeTtl', {min: 1}))),
+        check('refreshRotation', 'Rotate refresh tokens', 'Each one works once.'),
+        check('openId', 'OpenID Connect', 'ID tokens, user info and the discovery document.'),
+        h('div', {class: 'field', style: 'margin-top:16px'}, h('label', {}, 'Scopes'), list(draft, 'scopes', 'Scopes')),
+        claimsField()),
+      h('section', {class: 'form-section'}, h('h2', {}, 'Clients'),
+        draft.clients.map(clientCard),
+        h('button', {type: 'button', onclick: () => {
+          draft.clients.push({id: '', secret: '', authMethod: 'client_secret_basic', redirectUris: [], grants: [], scopes: [], publicKey: '', tlsSubject: ''});
+          render(); changed();
+        }}, 'Add client')),
+      h('section', {class: 'form-section'}, h('h2', {}, 'Users'),
+        table(['User name', 'Password', 'Subject', 'Full name', 'Email', ''], draft.users.map(userRow)),
+        h('button', {type: 'button', style: 'margin-top:8px', onclick: () => {
+          draft.users.push({username: '', password: '', sub: '', name: '', email: ''});
+          render(); changed();
+        }}, 'Add user')),
+      h('section', {class: 'form-section'}, h('h2', {}, 'Failures'),
+        h('p', {class: 'meta', style: 'margin:-4px 0 12px'}, 'To see how a proxy behaves when its IdP is slow or failing.'),
+        h('div', {class: 'idp-grid'},
+          field('Delay (ms)', 'Added to each request.', number('delayMs', {min: 0, max: 60000})),
+          field('Fail', null, pick('faultEndpoint', IDP_FAULT_ENDPOINTS.map(e => [e, e === '' ? 'Nothing' : e === 'all' ? 'Every endpoint' : e]))),
+          field('Status', null, number('faultStatus', {min: 400, max: 599})),
+          field('Error code', null, text('faultError')))));
+    page.replaceChildren(statusBox, endpointsBox, settings, logBox,
+      h('div', {class: 'savebar'}, h('div', {}, h('span', {class: 'sub'}, data.running ? 'Saving restarts the server. Issued tokens are kept.' : ''), discardButton, saveButton)));
+    changed();
+  }
+  render();
   return page;
 }
 

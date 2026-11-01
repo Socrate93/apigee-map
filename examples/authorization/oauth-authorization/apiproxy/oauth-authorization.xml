@@ -1,0 +1,4 @@
+<APIProxy revision="12" name="oauth-authorization">
+    <DisplayName>oauth-authorization</DisplayName>
+    <Description>OAuth 2.0 / OpenID Connect authorization server on Edge, brokering user login to an external IdP</Description>
+</APIProxy>

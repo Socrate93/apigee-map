@@ -1,0 +1,7 @@
+<BasicAuthentication async="false" continueOnError="false" enabled="true" name="BA-Encode-Idp-Client">
+    <Operation>Encode</Operation>
+    <IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>
+    <User ref="private.idp.client_id"/>
+    <Password ref="private.idp.client_secret"/>
+    <AssignTo createNew="false">idp.authorization</AssignTo>
+</BasicAuthentication>

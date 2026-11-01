@@ -3,6 +3,7 @@ package dev.apigeemap.ui;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import dev.apigeemap.history.SourceHistory;
+import dev.apigeemap.idp.MockIdp;
 import dev.apigeemap.protocol.BackendConfig;
 import dev.apigeemap.protocol.Json;
 
@@ -15,6 +16,7 @@ import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.security.GeneralSecurityException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -44,11 +46,13 @@ public final class UiServer {
 
     private final UiService service;
     private final EditorService editor;
+    private final MockIdp idp;
     private final HttpServer server;
 
-    private UiServer(UiService service, EditorService editor, HttpServer server) {
+    private UiServer(UiService service, EditorService editor, MockIdp idp, HttpServer server) {
         this.service = service;
         this.editor = editor;
+        this.idp = idp;
         this.server = server;
     }
 
@@ -70,10 +74,12 @@ public final class UiServer {
             http = HttpServer.create(new InetSocketAddress(loopback, 0), 0);
         }
         UiService service = new UiService(settingsFile, historyRoot, backendConfig);
-        UiServer ui = new UiServer(service, new EditorService(service, historyRoot), http);
+        MockIdp idp = new MockIdp(settingsFile.toAbsolutePath().resolveSibling("mock-idp"));
+        UiServer ui = new UiServer(service, new EditorService(service, historyRoot), idp, http);
         http.createContext("/", ui::handle);
         http.setExecutor(Executors.newFixedThreadPool(4));
         http.start();
+        idp.startIfAsked();
         return ui;
     }
 
@@ -82,6 +88,7 @@ public final class UiServer {
     }
 
     public void stop() {
+        idp.close();
         server.stop(0);
     }
 
@@ -103,14 +110,14 @@ public final class UiServer {
                 json(exchange, e.status, Map.of("error", e.getMessage()));
             } catch (IllegalArgumentException e) {
                 json(exchange, 400, Map.of("error", e.getMessage()));
-            } catch (IOException | RuntimeException e) {
+            } catch (IOException | GeneralSecurityException | RuntimeException e) {
                 json(exchange, 500, Map.of("error", String.valueOf(e.getMessage())));
             }
         }
     }
 
     private void route(HttpExchange exchange, String method, String path, Map<String, String> query)
-            throws IOException {
+            throws IOException, GeneralSecurityException {
         String asset = ASSETS.get(path);
         if (asset != null && method.equals("GET")) {
             sendAsset(exchange, asset);
@@ -203,6 +210,11 @@ public final class UiServer {
             case "POST /api/editor/save" -> json(exchange, 200,
                     Map.of("step", Optional.ofNullable(editor.save(query.get("id"),
                             (Map<?, ?>) Json.parse(body(exchange)))).map(s -> (Object) s.id()).orElse("")));
+            case "GET /api/idp" -> json(exchange, 200, idp.status());
+            case "PUT /api/idp" -> json(exchange, 200, idp.save(Json.parse(body(exchange))));
+            case "POST /api/idp/start" -> json(exchange, 200, idp.start());
+            case "POST /api/idp/stop" -> json(exchange, 200, idp.stop());
+            case "POST /api/idp/clear" -> json(exchange, 200, idp.clear());
             default -> json(exchange, 404, Map.of("error", "Not found: " + method + " " + path));
         }
     }

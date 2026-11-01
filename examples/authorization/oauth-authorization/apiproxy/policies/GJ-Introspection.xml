@@ -1,0 +1,14 @@
+<GenerateJWT async="false" continueOnError="false" enabled="true" name="GJ-Introspection">
+    <Algorithm>RS256</Algorithm>
+    <PrivateKey>
+        <Value ref="private.jwt.signing_key"/>
+        <Id ref="jwt.key_id"/>
+    </PrivateKey>
+    <Issuer ref="oauth.issuer"/>
+    <Audience ref="client.id"/>
+    <ExpiresIn>1m</ExpiresIn>
+    <AdditionalClaims>
+        <Claim name="token_introspection" ref="response.content" type="map"/>
+    </AdditionalClaims>
+    <OutputVariable>introspection.jwt</OutputVariable>
+</GenerateJWT>

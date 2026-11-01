@@ -1,0 +1,8 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Error-Temporarily-Unavailable">
+    <Set>
+        <StatusCode>503</StatusCode>
+        <Payload contentType="application/json">{"error": "temporarily_unavailable", "error_description": "The identity provider is not reachable"}</Payload>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="response"/>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>

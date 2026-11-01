@@ -1,0 +1,39 @@
+openapi: 3.0.1
+info:
+  title: Token endpoint
+  version: 1.0.0
+servers:
+  - url: /oauth/v2
+paths:
+  /token:
+    post:
+      summary: Issues an access token
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type]
+              properties:
+                grant_type:
+                  type: string
+                code:
+                  type: string
+                code_verifier:
+                  type: string
+                refresh_token:
+                  type: string
+                assertion:
+                  type: string
+                username:
+                  type: string
+                password:
+                  type: string
+                scope:
+                  type: string
+      responses:
+        '200':
+          description: The tokens
+        '400':
+          description: An OAuth error

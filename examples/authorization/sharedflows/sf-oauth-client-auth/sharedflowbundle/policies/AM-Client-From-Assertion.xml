@@ -1,0 +1,7 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Client-From-Assertion">
+    <AssignVariable>
+        <Name>client.id</Name>
+        <Ref>jwt.DJ-Client-Assertion.claim.issuer</Ref>
+    </AssignVariable>
+    <IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>
+</AssignMessage>

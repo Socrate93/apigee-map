@@ -1,0 +1,12 @@
+<ResponseCache async="false" continueOnError="false" enabled="true" name="RC-Metadata">
+    <CacheKey>
+        <Prefix>oauth-metadata</Prefix>
+        <KeyFragment ref="proxy.pathsuffix"/>
+    </CacheKey>
+    <Scope>Environment</Scope>
+    <CacheResource>oauth-cache</CacheResource>
+    <ExpirySettings>
+        <TimeoutInSec>3600</TimeoutInSec>
+    </ExpirySettings>
+    <SkipCacheLookup>request.header.Cache-Control = "no-cache"</SkipCacheLookup>
+</ResponseCache>

@@ -1,0 +1,7 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Introspection-Jwt">
+    <Set>
+        <Payload contentType="application/token-introspection+jwt">{introspection.jwt}</Payload>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="response"/>
+    <IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>
+</AssignMessage>

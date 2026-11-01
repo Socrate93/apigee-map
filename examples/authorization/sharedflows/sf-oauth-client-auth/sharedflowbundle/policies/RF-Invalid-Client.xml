@@ -1,0 +1,12 @@
+<RaiseFault async="false" continueOnError="false" enabled="true" name="RF-Invalid-Client">
+    <FaultResponse>
+        <Set>
+            <StatusCode>401</StatusCode>
+            <Headers>
+                <Header name="WWW-Authenticate">Basic realm="oauth"</Header>
+            </Headers>
+            <Payload contentType="application/json">{"error": "invalid_client", "error_description": "Client authentication failed"}</Payload>
+        </Set>
+    </FaultResponse>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</RaiseFault>

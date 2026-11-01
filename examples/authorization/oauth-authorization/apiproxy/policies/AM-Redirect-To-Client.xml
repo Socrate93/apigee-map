@@ -1,0 +1,11 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Redirect-To-Client">
+    <Set>
+        <StatusCode>302</StatusCode>
+        <ReasonPhrase>Found</ReasonPhrase>
+        <Headers>
+            <Header name="Location">{session.redirect_uri}?code={oauthv2authcode.OA-Generate-Code.code}&amp;state={session.state}</Header>
+        </Headers>
+    </Set>
+    <AssignTo createNew="true" transport="http" type="response"/>
+    <IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>
+</AssignMessage>

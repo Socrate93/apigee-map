@@ -1,0 +1,3 @@
+<GetOAuthV2Info async="false" continueOnError="false" enabled="true" name="GOI-Param-Token">
+    <AccessToken ref="param.token"/>
+</GetOAuthV2Info>

@@ -62,9 +62,26 @@ class UiServerTest {
     }
 
     @Test
+    void theMockIdpIsDrivenFromThePage() throws Exception {
+        Map<?, ?> status = (Map<?, ?>) Json.parse(get("/api/idp").body());
+        assertEquals(false, status.get("running"));
+        assertEquals(403, send("POST", "/api/idp/start", "", false).statusCode());
+        assertEquals(400, send("PUT", "/api/idp", "{\"transport\": \"ftp\"}", true).statusCode());
+        assertEquals(200, send("PUT", "/api/idp", "{\"port\": 0, \"tokenType\": \"Bearer\"}", true).statusCode());
+
+        Map<?, ?> started = (Map<?, ?>) Json.parse(post("/api/idp/start").body());
+        assertEquals(true, started.get("running"));
+        HttpResponse<String> metadata = http.send(HttpRequest.newBuilder(URI.create(started.get("url")
+                + "/.well-known/openid-configuration")).build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(started.get("issuer"), ((Map<?, ?>) Json.parse(metadata.body())).get("issuer"));
+
+        assertEquals(false, ((Map<?, ?>) Json.parse(post("/api/idp/stop").body())).get("running"));
+    }
+
+    @Test
     void listsProxiesWithoutAnalyzingThem() throws Exception {
         List<?> proxies = listed();
-        assertEquals(4, proxies.size());
+        assertEquals(5, proxies.size());
         Map<?, ?> orders = listed("orders-api");
         assertEquals(0.0, orders.get("sharedFlows"));
         assertNull(orders.get("analyzed"));
@@ -74,7 +91,7 @@ class UiServerTest {
     @Test
     void listsTheFiguresOfTheLastAnalysisAfterARestart() throws Exception {
         Map<?, ?> analyzed = (Map<?, ?>) Json.parse(post("/api/proxies/analyze").body());
-        assertEquals(4.0, analyzed.get("analyzed"));
+        assertEquals(5.0, analyzed.get("analyzed"));
         assertEquals(0.0, analyzed.get("failed"));
 
         restart();

@@ -1,0 +1,19 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Idp-Token-Request">
+    <Set>
+        <Verb>POST</Verb>
+        <Headers>
+            <Header name="Content-Type">application/x-www-form-urlencoded</Header>
+            <Header name="Accept">application/json</Header>
+            <Header name="Authorization">{idp.authorization}</Header>
+        </Headers>
+        <FormParams>
+            <FormParam name="grant_type">authorization_code</FormParam>
+            <FormParam name="code">{callback.code}</FormParam>
+            <FormParam name="redirect_uri">{idp.callback_url}</FormParam>
+            <FormParam name="client_assertion_type">urn:ietf:params:oauth:client-assertion-type:jwt-bearer</FormParam>
+            <FormParam name="client_assertion">{idp.client_assertion}</FormParam>
+        </FormParams>
+    </Set>
+    <AssignTo createNew="true" transport="http" type="request">idpTokenRequest</AssignTo>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>

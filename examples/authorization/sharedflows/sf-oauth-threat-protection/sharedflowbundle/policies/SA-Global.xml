@@ -1,0 +1,5 @@
+<SpikeArrest async="false" continueOnError="false" enabled="true" name="SA-Global">
+    <Rate>100ps</Rate>
+    <Identifier ref="client.ip"/>
+    <UseEffectiveCount>true</UseEffectiveCount>
+</SpikeArrest>

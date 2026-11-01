@@ -1,0 +1,12 @@
+<GenerateJWT async="false" continueOnError="false" enabled="true" name="GJ-Client-Assertion">
+    <Algorithm>RS256</Algorithm>
+    <PrivateKey>
+        <Value ref="private.jwt.signing_key"/>
+        <Id ref="jwt.key_id"/>
+    </PrivateKey>
+    <Subject ref="private.idp.client_id"/>
+    <Issuer ref="private.idp.client_id"/>
+    <Audience ref="idp.issuer"/>
+    <ExpiresIn>1m</ExpiresIn>
+    <OutputVariable>idp.client_assertion</OutputVariable>
+</GenerateJWT>

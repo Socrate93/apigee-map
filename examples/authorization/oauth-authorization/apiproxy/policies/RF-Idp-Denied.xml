@@ -1,0 +1,9 @@
+<RaiseFault async="false" continueOnError="false" enabled="true" name="RF-Idp-Denied">
+    <FaultResponse>
+        <Set>
+            <StatusCode>403</StatusCode>
+            <Payload contentType="application/json">{"error": "access_denied", "error_description": "The identity provider refused the login"}</Payload>
+        </Set>
+    </FaultResponse>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</RaiseFault>

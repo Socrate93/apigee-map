@@ -1,0 +1,10 @@
+<GenerateJWS async="false" continueOnError="false" enabled="true" name="GJWS-Metadata">
+    <Algorithm>RS256</Algorithm>
+    <PrivateKey>
+        <Value ref="private.jwt.signing_key"/>
+        <Id ref="jwt.key_id"/>
+    </PrivateKey>
+    <Payload ref="response.content"/>
+    <DetachContent>true</DetachContent>
+    <OutputVariable>metadata.jws</OutputVariable>
+</GenerateJWS>

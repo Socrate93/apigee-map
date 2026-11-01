@@ -1,0 +1,15 @@
+<ExtractVariables async="false" continueOnError="false" enabled="true" name="EV-Authorize-Session">
+    <Source>session.json</Source>
+    <VariablePrefix>session</VariablePrefix>
+    <JSONPayload>
+        <Variable name="client_id"><JSONPath>$.client_id</JSONPath></Variable>
+        <Variable name="response_type"><JSONPath>$.response_type</JSONPath></Variable>
+        <Variable name="redirect_uri"><JSONPath>$.redirect_uri</JSONPath></Variable>
+        <Variable name="scope"><JSONPath>$.scope</JSONPath></Variable>
+        <Variable name="state"><JSONPath>$.state</JSONPath></Variable>
+        <Variable name="nonce"><JSONPath>$.nonce</JSONPath></Variable>
+        <Variable name="code_challenge"><JSONPath>$.code_challenge</JSONPath></Variable>
+        <Variable name="code_challenge_method"><JSONPath>$.code_challenge_method</JSONPath></Variable>
+    </JSONPayload>
+    <IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>
+</ExtractVariables>

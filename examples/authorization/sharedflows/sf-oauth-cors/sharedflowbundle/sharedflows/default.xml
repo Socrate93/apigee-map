@@ -1,0 +1,8 @@
+<SharedFlow name="default">
+    <Step><Name>KVM-Get-Origins</Name></Step>
+    <Step><Name>JS-Match-Origin</Name></Step>
+    <Step>
+        <Name>AM-Cors-Headers</Name>
+        <Condition>cors.origin != null</Condition>
+    </Step>
+</SharedFlow>

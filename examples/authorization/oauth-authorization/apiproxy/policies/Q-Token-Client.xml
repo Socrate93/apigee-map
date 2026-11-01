@@ -1,0 +1,8 @@
+<Quota async="false" continueOnError="false" enabled="true" name="Q-Token-Client" type="rollingwindow">
+    <Allow count="300"/>
+    <Interval>1</Interval>
+    <TimeUnit>minute</TimeUnit>
+    <Identifier ref="client.id"/>
+    <Distributed>true</Distributed>
+    <Synchronous>true</Synchronous>
+</Quota>

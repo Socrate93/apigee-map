@@ -1,0 +1,9 @@
+<RaiseFault async="false" continueOnError="false" enabled="true" name="RF-Invalid-Grant">
+    <FaultResponse>
+        <Set>
+            <StatusCode>400</StatusCode>
+            <Payload contentType="application/json">{"error": "invalid_grant", "error_description": "The code verifier does not match"}</Payload>
+        </Set>
+    </FaultResponse>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</RaiseFault>

@@ -1,0 +1,9 @@
+<InvalidateCache async="false" continueOnError="false" enabled="true" name="IC-Authorize-Session">
+    <CacheKey>
+        <Prefix>authorize-session</Prefix>
+        <KeyFragment ref="callback.state"/>
+    </CacheKey>
+    <CacheResource>oauth-cache</CacheResource>
+    <Scope>Environment</Scope>
+    <PurgeChildEntries>false</PurgeChildEntries>
+</InvalidateCache>

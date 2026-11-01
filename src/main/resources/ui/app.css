@@ -40,8 +40,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.primary:hover { filter: brightness(1.08); }
 button.link { border: 0; background: none; color: var(--accent); padding: 2px 4px; }
 button:disabled { opacity: .5; cursor: default; }
-input[type=text], input[type=search], input[type=password], select { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
-input[type=text]:focus, input[type=search]:focus, input[type=password]:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+input[type=text], input[type=search], input[type=password], input[type=number], select { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+input[type=text]:focus, input[type=search]:focus, input[type=password]:focus, input[type=number]:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
 
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin-top: 16px; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
@@ -326,3 +326,14 @@ table.tests .purpose { color: var(--fg); margin: 2px 0; }
 .editor-problem:disabled { cursor: default; color: inherit; }
 .editor-problem .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .editor-problem .place { color: var(--muted); white-space: nowrap; }
+
+.idp-status { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px; }
+.idp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 16px; }
+.idp-grid input, .idp-grid select, .idp-card input[type=text], .idp-card input[type=password], .form-section > .field > input { width: 100%; }
+.form-section textarea { width: 100%; box-sizing: border-box; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; resize: vertical; }
+.idp-checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 16px; }
+.field label.idp-check, .idp-check { display: flex; align-items: flex-start; gap: 6px; font-weight: 400; margin: 4px 0; }
+.idp-check input { margin-top: 3px; }
+.idp-card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+.idp-sample { margin: 0; padding: 10px 12px; background: var(--soft); border-radius: 6px; overflow-x: auto; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+textarea.bad { border-color: var(--err); }

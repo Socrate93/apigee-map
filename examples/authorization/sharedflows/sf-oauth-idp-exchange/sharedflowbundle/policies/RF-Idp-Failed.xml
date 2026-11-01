@@ -1,0 +1,9 @@
+<RaiseFault async="false" continueOnError="false" enabled="true" name="RF-Idp-Failed">
+    <FaultResponse>
+        <Set>
+            <StatusCode>502</StatusCode>
+            <Payload contentType="application/json">{"error": "temporarily_unavailable", "error_description": "The identity provider refused the code"}</Payload>
+        </Set>
+    </FaultResponse>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</RaiseFault>

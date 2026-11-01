@@ -1,0 +1,8 @@
+<ExtractVariables async="false" continueOnError="false" enabled="true" name="EV-Idp-Tokens">
+    <Source>idpTokenResponse</Source>
+    <JSONPayload>
+        <Variable name="private.idp.access_token"><JSONPath>$.access_token</JSONPath></Variable>
+        <Variable name="idp.id_token"><JSONPath>$.id_token</JSONPath></Variable>
+    </JSONPayload>
+    <IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>
+</ExtractVariables>

@@ -1,0 +1,13 @@
+<ExtractVariables async="false" continueOnError="false" enabled="true" name="EV-App-Profile">
+    <Source>AccessEntity.AE-Authorize-App</Source>
+    <VariablePrefix>app</VariablePrefix>
+    <XMLPayload>
+        <Variable name="callback_url" type="string">
+            <XPath>/App/CallbackUrl</XPath>
+        </Variable>
+        <Variable name="request_object_jwks" type="string">
+            <XPath>/App/Attributes/Attribute[Name='request_object_jwks']/Value</XPath>
+        </Variable>
+    </XMLPayload>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</ExtractVariables>

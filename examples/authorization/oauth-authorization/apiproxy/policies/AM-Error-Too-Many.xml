@@ -1,0 +1,8 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Error-Too-Many">
+    <Set>
+        <StatusCode>429</StatusCode>
+        <Payload contentType="application/json">{"error": "too_many_requests", "error_description": "Too many requests, try again later"}</Payload>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="response"/>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>

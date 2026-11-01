@@ -1,0 +1,17 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Idp-Headers">
+    <Remove>
+        <Headers>
+            <Header name="Cookie"/>
+            <Header name="X-Forwarded-For"/>
+        </Headers>
+        <QueryParams/>
+    </Remove>
+    <Set>
+        <Headers>
+            <Header name="X-Request-Id">{messageid}</Header>
+            <Header name="Accept">application/json</Header>
+        </Headers>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="request"/>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>

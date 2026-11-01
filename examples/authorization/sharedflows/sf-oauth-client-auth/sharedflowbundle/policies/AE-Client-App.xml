@@ -1,0 +1,4 @@
+<AccessEntity async="false" continueOnError="false" enabled="true" name="AE-Client-App">
+    <EntityType value="consumerkey"/>
+    <EntityIdentifier ref="client.id" type="consumerkey"/>
+</AccessEntity>

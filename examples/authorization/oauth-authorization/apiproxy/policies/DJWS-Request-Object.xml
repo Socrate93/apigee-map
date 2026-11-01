@@ -1,0 +1,3 @@
+<DecodeJWS async="false" continueOnError="false" enabled="true" name="DJWS-Request-Object">
+    <Source>request.queryparam.request</Source>
+</DecodeJWS>

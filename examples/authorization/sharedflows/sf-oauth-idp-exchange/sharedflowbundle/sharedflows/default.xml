@@ -1,0 +1,26 @@
+<SharedFlow name="default">
+    <Step><Name>FC-Config</Name></Step>
+    <Step>
+        <Name>GJ-Client-Assertion</Name>
+        <Condition>idp.client_auth = "private_key_jwt"</Condition>
+    </Step>
+    <Step>
+        <Name>BA-Encode-Idp-Client</Name>
+        <Condition>idp.client_auth = "client_secret_basic"</Condition>
+    </Step>
+    <Step><Name>AM-Idp-Token-Request</Name></Step>
+    <Step>
+        <Name>SC-Idp-Token-Mtls</Name>
+        <Condition>idp.transport = "mtls"</Condition>
+    </Step>
+    <Step>
+        <Name>SC-Idp-Token</Name>
+        <Condition>idp.transport != "mtls"</Condition>
+    </Step>
+    <Step>
+        <Name>RF-Idp-Failed</Name>
+        <Condition>idpTokenResponse.status.code != 200</Condition>
+    </Step>
+    <Step><Name>EV-Idp-Tokens</Name></Step>
+    <Step><Name>VJ-Id-Token</Name></Step>
+</SharedFlow>

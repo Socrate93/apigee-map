@@ -1,0 +1,8 @@
+<Quota async="false" continueOnError="false" enabled="true" name="Q-Login-Failures" type="rollingwindow">
+    <Allow count="5"/>
+    <Interval>15</Interval>
+    <TimeUnit>minute</TimeUnit>
+    <Identifier ref="token.username"/>
+    <Distributed>true</Distributed>
+    <Synchronous>true</Synchronous>
+</Quota>

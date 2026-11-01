@@ -1,0 +1,9 @@
+<VerifyJWT async="false" continueOnError="false" enabled="true" name="VJ-Logout-Token">
+    <Algorithm>RS256</Algorithm>
+    <Source>logout.token</Source>
+    <PublicKey>
+        <JWKS uri="{idp.jwks_uri}"/>
+    </PublicKey>
+    <Issuer ref="idp.issuer"/>
+    <Audience ref="private.idp.client_id"/>
+</VerifyJWT>

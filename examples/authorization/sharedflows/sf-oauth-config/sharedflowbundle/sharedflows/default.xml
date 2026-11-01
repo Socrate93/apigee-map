@@ -1,0 +1,5 @@
+<SharedFlow name="default">
+    <Step><Name>KVM-Get-Idp</Name></Step>
+    <Step><Name>KVM-Get-Secrets</Name></Step>
+    <Step><Name>AM-Set-Issuer</Name></Step>
+</SharedFlow>

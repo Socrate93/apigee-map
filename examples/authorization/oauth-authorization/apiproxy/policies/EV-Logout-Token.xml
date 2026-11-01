@@ -1,0 +1,6 @@
+<ExtractVariables async="false" continueOnError="false" enabled="true" name="EV-Logout-Token">
+    <Source>request</Source>
+    <VariablePrefix>logout</VariablePrefix>
+    <FormParam name="logout_token"><Pattern ignoreCase="false">{token}</Pattern></FormParam>
+    <IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>
+</ExtractVariables>

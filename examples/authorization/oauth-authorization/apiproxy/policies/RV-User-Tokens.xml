@@ -1,0 +1,4 @@
+<RevokeOAuthV2 async="false" continueOnError="false" enabled="true" name="RV-User-Tokens">
+    <EndUserId ref="jwt.VJ-Logout-Token.claim.subject"/>
+    <Cascade>true</Cascade>
+</RevokeOAuthV2>

@@ -1,0 +1,8 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Error-Invalid-Request">
+    <Set>
+        <StatusCode>400</StatusCode>
+        <Payload contentType="application/json">{"error": "invalid_request", "error_description": "The request is not valid"}</Payload>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="response"/>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>

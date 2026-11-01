@@ -1,0 +1,9 @@
+<Quota async="false" continueOnError="false" enabled="true" name="Q-Authorize-Client" type="calendar">
+    <Allow countRef="verifyapikey.VA-Authorize-Client.apiproduct.developer.quota.limit" count="600"/>
+    <Interval ref="verifyapikey.VA-Authorize-Client.apiproduct.developer.quota.interval">1</Interval>
+    <TimeUnit ref="verifyapikey.VA-Authorize-Client.apiproduct.developer.quota.timeunit">minute</TimeUnit>
+    <StartTime>2026-01-01 00:00:00</StartTime>
+    <Identifier ref="verifyapikey.VA-Authorize-Client.client_id"/>
+    <Distributed>true</Distributed>
+    <Synchronous>false</Synchronous>
+</Quota>

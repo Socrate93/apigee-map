@@ -1,0 +1,4 @@
+<SharedFlowBundle revision="4" name="sf-oauth-config">
+    <DisplayName>sf-oauth-config</DisplayName>
+    <Description>Reads the IdP connection and the signing key of this environment</Description>
+</SharedFlowBundle>

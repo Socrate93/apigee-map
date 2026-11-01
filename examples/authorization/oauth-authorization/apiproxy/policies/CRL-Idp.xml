@@ -1,0 +1,6 @@
+<ConcurrentRatelimit async="false" continueOnError="false" enabled="true" name="CRL-Idp">
+    <AllowConnections count="50" ttl="10"/>
+    <Distributed>true</Distributed>
+    <StrictOnTtl>false</StrictOnTtl>
+    <TargetIdentifier name="idp"/>
+</ConcurrentRatelimit>

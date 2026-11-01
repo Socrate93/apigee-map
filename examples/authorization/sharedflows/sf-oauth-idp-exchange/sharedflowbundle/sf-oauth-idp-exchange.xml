@@ -1,0 +1,4 @@
+<SharedFlowBundle revision="4" name="sf-oauth-idp-exchange">
+    <DisplayName>sf-oauth-idp-exchange</DisplayName>
+    <Description>Exchanges the code of the IdP for its tokens and verifies the ID token</Description>
+</SharedFlowBundle>

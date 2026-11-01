@@ -1,0 +1,9 @@
+<XMLToJSON async="false" continueOnError="false" enabled="true" name="X2J-Saml-Attributes">
+    <Source>samlRequest</Source>
+    <OutputVariable>saml.attributes</OutputVariable>
+    <Options>
+        <RecognizeNumber>false</RecognizeNumber>
+        <NamespaceBlockName>#namespaces</NamespaceBlockName>
+        <StripLevels>1</StripLevels>
+    </Options>
+</XMLToJSON>

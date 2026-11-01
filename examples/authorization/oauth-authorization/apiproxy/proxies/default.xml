@@ -1,0 +1,324 @@
+<ProxyEndpoint name="default">
+    <Description>Authorization server: tokens are issued here, users are authenticated by the external IdP</Description>
+    <PreFlow name="PreFlow">
+        <Request>
+            <Step><Name>FC-Threat-Protection</Name></Step>
+            <Step><Name>FC-Idp-Config</Name></Step>
+        </Request>
+        <Response/>
+    </PreFlow>
+    <Flows>
+        <Flow name="preflight">
+            <Condition>request.verb = "OPTIONS"</Condition>
+            <Request/>
+            <Response/>
+        </Flow>
+        <Flow name="discovery">
+            <Condition>(proxy.pathsuffix MatchesPath "/.well-known/openid-configuration") and (request.verb = "GET")</Condition>
+            <Request>
+                <Step><Name>AM-Route-Discovery</Name></Step>
+                <Step><Name>RC-Metadata</Name></Step>
+            </Request>
+            <Response>
+                <Step>
+                    <Name>JS-Rewrite-Discovery</Name>
+                    <Condition>response.status.code = 200</Condition>
+                </Step>
+                <Step>
+                    <Name>GJWS-Metadata</Name>
+                    <Condition>response.status.code = 200</Condition>
+                </Step>
+                <Step>
+                    <Name>AM-Metadata-Signature</Name>
+                    <Condition>response.status.code = 200</Condition>
+                </Step>
+                <Step><Name>RC-Metadata</Name></Step>
+            </Response>
+        </Flow>
+        <Flow name="jwks">
+            <Condition>(proxy.pathsuffix MatchesPath "/jwks") and (request.verb = "GET")</Condition>
+            <Request>
+                <Step><Name>AM-Route-Jwks</Name></Step>
+                <Step><Name>RC-Metadata</Name></Step>
+            </Request>
+            <Response>
+                <Step><Name>RC-Metadata</Name></Step>
+            </Response>
+        </Flow>
+        <Flow name="authorize">
+            <Condition>(proxy.pathsuffix MatchesPath "/authorize") and (request.verb = "GET")</Condition>
+            <Request>
+                <Step><Name>VA-Authorize-Client</Name></Step>
+                <Step><Name>Q-Authorize-Client</Name></Step>
+                <Step><Name>AE-Authorize-App</Name></Step>
+                <Step><Name>EV-App-Profile</Name></Step>
+                <Step>
+                    <Name>DJWS-Request-Object</Name>
+                    <Condition>request.queryparam.request != null</Condition>
+                </Step>
+                <Step>
+                    <Name>VJWS-Request-Object</Name>
+                    <Condition>request.queryparam.request != null</Condition>
+                </Step>
+                <Step><Name>EV-Authorize-Params</Name></Step>
+                <Step><Name>JS-Check-Authorize</Name></Step>
+                <Step>
+                    <Name>RF-Invalid-Request</Name>
+                    <Condition>authorize.error != null</Condition>
+                </Step>
+                <Step><Name>PC-Authorize-Session</Name></Step>
+                <Step><Name>AM-Redirect-To-Idp</Name></Step>
+            </Request>
+            <Response/>
+        </Flow>
+        <Flow name="callback">
+            <Condition>(proxy.pathsuffix MatchesPath "/callback") and (request.verb = "GET")</Condition>
+            <Request>
+                <Step><Name>EV-Callback-Params</Name></Step>
+                <Step>
+                    <Name>RF-Idp-Denied</Name>
+                    <Condition>callback.error != null</Condition>
+                </Step>
+                <Step><Name>LC-Authorize-Session</Name></Step>
+                <Step>
+                    <Name>RF-Invalid-State</Name>
+                    <Condition>lookupcache.LC-Authorize-Session.cachehit = false</Condition>
+                </Step>
+                <Step><Name>IC-Authorize-Session</Name></Step>
+                <Step><Name>EV-Authorize-Session</Name></Step>
+                <Step><Name>FC-Idp-Exchange</Name></Step>
+                <Step>
+                    <Name>RF-Nonce-Mismatch</Name>
+                    <Condition>jwt.VJ-Id-Token.decoded.claim.nonce != session.nonce</Condition>
+                </Step>
+                <Step><Name>OA-Generate-Code</Name></Step>
+                <Step><Name>AM-Redirect-To-Client</Name></Step>
+            </Request>
+            <Response/>
+        </Flow>
+        <Flow name="token">
+            <Condition>(proxy.pathsuffix MatchesPath "/token") and (request.verb = "POST")</Condition>
+            <Request>
+                <Step><Name>OAS-Token</Name></Step>
+                <Step><Name>FC-Client-Auth</Name></Step>
+                <Step><Name>EV-Token-Form</Name></Step>
+                <Step><Name>Q-Token-Client</Name></Step>
+                <Step>
+                    <Name>GOI-Code</Name>
+                    <Condition>token.grant_type = "authorization_code"</Condition>
+                </Step>
+                <Step>
+                    <Name>JS-Verify-Pkce</Name>
+                    <Condition>token.grant_type = "authorization_code"</Condition>
+                </Step>
+                <Step>
+                    <Name>RF-Invalid-Grant</Name>
+                    <Condition>pkce.valid = false</Condition>
+                </Step>
+                <Step>
+                    <Name>OA-Token-Code</Name>
+                    <Condition>token.grant_type = "authorization_code"</Condition>
+                </Step>
+                <Step>
+                    <Name>DOI-Code</Name>
+                    <Condition>token.grant_type = "authorization_code"</Condition>
+                </Step>
+                <Step>
+                    <Name>OA-Token-Client-Credentials</Name>
+                    <Condition>token.grant_type = "client_credentials"</Condition>
+                </Step>
+                <Step>
+                    <Name>Q-Login-Failures</Name>
+                    <Condition>token.grant_type = "password"</Condition>
+                </Step>
+                <Step>
+                    <Name>LDAP-Password</Name>
+                    <Condition>token.grant_type = "password"</Condition>
+                </Step>
+                <Step>
+                    <Name>RQ-Login-Failures</Name>
+                    <Condition>token.grant_type = "password"</Condition>
+                </Step>
+                <Step>
+                    <Name>OA-Token-Password</Name>
+                    <Condition>token.grant_type = "password"</Condition>
+                </Step>
+                <Step>
+                    <Name>OA-Token-Refresh</Name>
+                    <Condition>token.grant_type = "refresh_token"</Condition>
+                </Step>
+                <Step>
+                    <Name>AM-Saml-Payload</Name>
+                    <Condition>token.grant_type = "urn:ietf:params:oauth:grant-type:saml2-bearer"</Condition>
+                </Step>
+                <Step>
+                    <Name>MV-Saml-Assertion</Name>
+                    <Condition>token.grant_type = "urn:ietf:params:oauth:grant-type:saml2-bearer"</Condition>
+                </Step>
+                <Step>
+                    <Name>VS-Saml-Assertion</Name>
+                    <Condition>token.grant_type = "urn:ietf:params:oauth:grant-type:saml2-bearer"</Condition>
+                </Step>
+                <Step>
+                    <Name>X2J-Saml-Attributes</Name>
+                    <Condition>token.grant_type = "urn:ietf:params:oauth:grant-type:saml2-bearer"</Condition>
+                </Step>
+                <Step>
+                    <Name>OA-Token-Saml</Name>
+                    <Condition>token.grant_type = "urn:ietf:params:oauth:grant-type:saml2-bearer"</Condition>
+                </Step>
+                <Step>
+                    <Name>SOI-Certificate-Binding</Name>
+                    <Condition>client.cert.thumbprint != null</Condition>
+                </Step>
+            </Request>
+            <Response>
+                <Step>
+                    <Name>GJ-Id-Token</Name>
+                    <Condition>token.grant_type = "authorization_code"</Condition>
+                </Step>
+                <Step>
+                    <Name>JS-Add-Id-Token</Name>
+                    <Condition>token.grant_type = "authorization_code"</Condition>
+                </Step>
+            </Response>
+        </Flow>
+        <Flow name="introspect">
+            <Condition>(proxy.pathsuffix MatchesPath "/introspect") and (request.verb = "POST")</Condition>
+            <Request>
+                <Step><Name>AC-Internal-Clients</Name></Step>
+                <Step><Name>FC-Client-Auth</Name></Step>
+                <Step><Name>EV-Token-Param</Name></Step>
+                <Step><Name>OA-Verify-Param</Name></Step>
+                <Step>
+                    <Name>AM-Introspect-Inactive</Name>
+                    <Condition>oauthV2.OA-Verify-Param.failed = true</Condition>
+                </Step>
+                <Step>
+                    <Name>GOI-Param-Token</Name>
+                    <Condition>oauthV2.OA-Verify-Param.failed != true</Condition>
+                </Step>
+                <Step>
+                    <Name>AM-Introspect-Active</Name>
+                    <Condition>oauthV2.OA-Verify-Param.failed != true</Condition>
+                </Step>
+                <Step>
+                    <Name>GJ-Introspection</Name>
+                    <Condition>(request.header.Accept = "application/token-introspection+jwt") and (oauthV2.OA-Verify-Param.failed != true)</Condition>
+                </Step>
+                <Step>
+                    <Name>AM-Introspection-Jwt</Name>
+                    <Condition>(request.header.Accept = "application/token-introspection+jwt") and (oauthV2.OA-Verify-Param.failed != true)</Condition>
+                </Step>
+            </Request>
+            <Response/>
+        </Flow>
+        <Flow name="revoke">
+            <Condition>(proxy.pathsuffix MatchesPath "/revoke") and (request.verb = "POST")</Condition>
+            <Request>
+                <Step><Name>FC-Client-Auth</Name></Step>
+                <Step><Name>EV-Token-Param</Name></Step>
+                <Step><Name>OA-Invalidate-Token</Name></Step>
+                <Step><Name>IC-Userinfo</Name></Step>
+                <Step><Name>AM-Revoked</Name></Step>
+            </Request>
+            <Response/>
+        </Flow>
+        <Flow name="backchannel-logout">
+            <Condition>(proxy.pathsuffix MatchesPath "/logout/backchannel") and (request.verb = "POST")</Condition>
+            <Request>
+                <Step><Name>EV-Logout-Token</Name></Step>
+                <Step><Name>DJ-Logout-Token</Name></Step>
+                <Step><Name>VJ-Logout-Token</Name></Step>
+                <Step><Name>RV-User-Tokens</Name></Step>
+                <Step><Name>IC-Userinfo</Name></Step>
+                <Step><Name>AM-Revoked</Name></Step>
+            </Request>
+            <Response/>
+        </Flow>
+        <Flow name="userinfo">
+            <Condition>(proxy.pathsuffix MatchesPath "/userinfo") and (request.verb = "GET")</Condition>
+            <Request>
+                <Step><Name>OA-Verify-Bearer</Name></Step>
+                <Step><Name>GOI-Bearer</Name></Step>
+                <Step><Name>LC-Userinfo</Name></Step>
+                <Step>
+                    <Name>RF-Userinfo-Cached</Name>
+                    <Condition>lookupcache.LC-Userinfo.cachehit = true</Condition>
+                </Step>
+                <Step><Name>AM-Route-Userinfo</Name></Step>
+            </Request>
+            <Response>
+                <Step>
+                    <Name>PC-Userinfo</Name>
+                    <Condition>response.status.code = 200</Condition>
+                </Step>
+                <Step>
+                    <Name>J2X-Userinfo</Name>
+                    <Condition>(response.status.code = 200) and (request.header.Accept = "application/xml")</Condition>
+                </Step>
+                <Step>
+                    <Name>XSL-Userinfo</Name>
+                    <Condition>(response.status.code = 200) and (request.header.Accept = "application/xml")</Condition>
+                </Step>
+            </Response>
+        </Flow>
+        <Flow name="not-found">
+            <Request>
+                <Step><Name>RF-Not-Found</Name></Step>
+            </Request>
+            <Response/>
+        </Flow>
+    </Flows>
+    <PostFlow name="PostFlow">
+        <Request/>
+        <Response>
+            <Step><Name>FC-Cors</Name></Step>
+        </Response>
+    </PostFlow>
+    <PostClientFlow>
+        <Response>
+            <Step><Name>FC-Audit</Name></Step>
+        </Response>
+    </PostClientFlow>
+    <FaultRules>
+        <FaultRule name="invalid-client">
+            <Condition>(fault.name = "InvalidClientIdentifier") or (fault.name = "InvalidApiKey") or (fault.name = "invalid_client") or (fault.name = "InvalidBasicAuthenticationSource")</Condition>
+            <Step><Name>AM-Error-Invalid-Client</Name></Step>
+        </FaultRule>
+        <FaultRule name="invalid-token">
+            <Condition>(fault.name = "invalid_access_token") or (fault.name = "access_token_expired") or (fault.name = "InvalidAccessToken")</Condition>
+            <Step><Name>AM-Error-Invalid-Token</Name></Step>
+        </FaultRule>
+        <FaultRule name="invalid-grant">
+            <Condition>(fault.name = "invalid_grant") or (fault.name = "InvalidAuthorizationCode") or (fault.name = "ExpiredAuthorizationCode") or (fault.name = "InvalidRefreshToken")</Condition>
+            <Step><Name>AM-Error-Invalid-Grant</Name></Step>
+        </FaultRule>
+        <FaultRule name="rate-limited">
+            <Condition>(fault.name = "QuotaViolation") or (fault.name = "SpikeArrestViolation") or (fault.name = "ConcurrentRatelimtViolation")</Condition>
+            <Step><Name>AM-Error-Too-Many</Name></Step>
+        </FaultRule>
+        <FaultRule name="rejected-payload">
+            <Condition>(fault.name = "ThreatDetected") or (fault.name = "ExecutionFailed") or (fault.name = "OASValidationFailed")</Condition>
+            <Step><Name>AM-Error-Invalid-Request</Name></Step>
+        </FaultRule>
+    </FaultRules>
+    <DefaultFaultRule name="server-error">
+        <AlwaysEnforce>true</AlwaysEnforce>
+        <Step><Name>AM-Error-Default</Name></Step>
+        <Step><Name>FC-Cors</Name></Step>
+    </DefaultFaultRule>
+    <HTTPProxyConnection>
+        <BasePath>/oauth/v2</BasePath>
+        <VirtualHost>secure</VirtualHost>
+    </HTTPProxyConnection>
+    <RouteRule name="idp-mtls">
+        <Condition>(route.to.idp = true) and (idp.transport = "mtls")</Condition>
+        <TargetEndpoint>idp-mtls</TargetEndpoint>
+    </RouteRule>
+    <RouteRule name="idp-tls">
+        <Condition>route.to.idp = true</Condition>
+        <TargetEndpoint>idp-tls</TargetEndpoint>
+    </RouteRule>
+    <RouteRule name="no-target"/>
+</ProxyEndpoint>

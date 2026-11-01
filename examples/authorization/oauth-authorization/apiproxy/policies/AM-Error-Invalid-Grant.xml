@@ -1,0 +1,8 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Error-Invalid-Grant">
+    <Set>
+        <StatusCode>400</StatusCode>
+        <Payload contentType="application/json">{"error": "invalid_grant", "error_description": "The grant is invalid or expired"}</Payload>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="response"/>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>

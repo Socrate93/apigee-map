@@ -1,0 +1,9 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Metadata-Signature">
+    <Set>
+        <Headers>
+            <Header name="X-JWS-Signature">{metadata.jws}</Header>
+        </Headers>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="response"/>
+    <IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>
+</AssignMessage>

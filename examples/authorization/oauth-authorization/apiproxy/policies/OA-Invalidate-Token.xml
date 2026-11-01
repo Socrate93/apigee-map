@@ -1,0 +1,6 @@
+<OAuthV2 async="false" continueOnError="true" enabled="true" name="OA-Invalidate-Token">
+    <Operation>InvalidateToken</Operation>
+    <Tokens>
+        <Token type="accesstoken" cascade="true">param.token</Token>
+    </Tokens>
+</OAuthV2>

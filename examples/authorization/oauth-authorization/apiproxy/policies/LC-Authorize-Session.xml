@@ -1,0 +1,9 @@
+<LookupCache async="false" continueOnError="false" enabled="true" name="LC-Authorize-Session">
+    <CacheKey>
+        <Prefix>authorize-session</Prefix>
+        <KeyFragment ref="callback.state"/>
+    </CacheKey>
+    <CacheResource>oauth-cache</CacheResource>
+    <Scope>Environment</Scope>
+    <AssignTo>session.json</AssignTo>
+</LookupCache>

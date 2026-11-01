@@ -1,0 +1,22 @@
+<XMLThreatProtection async="false" continueOnError="false" enabled="true" name="XTP-Body">
+    <NameLimits>
+        <Element>64</Element>
+        <Attribute>64</Attribute>
+        <NamespacePrefix>16</NamespacePrefix>
+        <ProcessingInstructionTarget>16</ProcessingInstructionTarget>
+    </NameLimits>
+    <Source>request</Source>
+    <StructureLimits>
+        <NodeDepth>20</NodeDepth>
+        <AttributeCountPerElement>10</AttributeCountPerElement>
+        <NamespaceCountPerElement>5</NamespaceCountPerElement>
+        <ChildCount includeComment="true" includeElement="true" includeProcessingInstruction="true" includeText="true">50</ChildCount>
+    </StructureLimits>
+    <ValueLimits>
+        <Text>8192</Text>
+        <Attribute>1024</Attribute>
+        <NamespaceURI>256</NamespaceURI>
+        <Comment>256</Comment>
+        <ProcessingInstructionData>256</ProcessingInstructionData>
+    </ValueLimits>
+</XMLThreatProtection>

@@ -1,0 +1,4 @@
+<SharedFlowBundle revision="4" name="sf-oauth-threat-protection">
+    <DisplayName>sf-oauth-threat-protection</DisplayName>
+    <Description>Limits the traffic and rejects hostile payloads before anything else runs</Description>
+</SharedFlowBundle>

@@ -1,0 +1,10 @@
+<ValidateSAMLAssertion async="false" continueOnError="false" enabled="true" ignoreContentType="false" name="VS-Saml-Assertion">
+    <Source name="samlRequest">
+        <XPath>/saml:Assertion</XPath>
+        <Namespaces>
+            <Namespace prefix="saml">urn:oasis:names:tc:SAML:2.0:assertion</Namespace>
+        </Namespaces>
+    </Source>
+    <TrustStore>saml-truststore</TrustStore>
+    <RemoveAssertion>false</RemoveAssertion>
+</ValidateSAMLAssertion>

@@ -1,0 +1,3 @@
+<FlowCallout async="false" continueOnError="false" enabled="true" name="FC-Threat-Protection">
+    <SharedFlowBundle>sf-oauth-threat-protection</SharedFlowBundle>
+</FlowCallout>

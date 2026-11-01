@@ -1,0 +1,10 @@
+<VerifyJWT async="false" continueOnError="false" enabled="true" name="VJ-Client-Assertion">
+    <Algorithm>RS256</Algorithm>
+    <Source>client.assertion</Source>
+    <PublicKey>
+        <Value ref="private.app.public_key"/>
+    </PublicKey>
+    <Subject ref="client.id"/>
+    <Audience ref="oauth.issuer"/>
+    <AdditionalClaims/>
+</VerifyJWT>

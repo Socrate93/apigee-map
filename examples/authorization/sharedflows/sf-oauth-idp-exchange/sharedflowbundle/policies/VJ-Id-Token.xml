@@ -1,0 +1,10 @@
+<VerifyJWT async="false" continueOnError="false" enabled="true" name="VJ-Id-Token">
+    <Algorithm>RS256,ES256,PS256</Algorithm>
+    <Source>idp.id_token</Source>
+    <PublicKey>
+        <JWKS uri="{idp.jwks_uri}"/>
+    </PublicKey>
+    <Issuer ref="idp.issuer"/>
+    <Audience ref="private.idp.client_id"/>
+    <TimeAllowance>30s</TimeAllowance>
+</VerifyJWT>

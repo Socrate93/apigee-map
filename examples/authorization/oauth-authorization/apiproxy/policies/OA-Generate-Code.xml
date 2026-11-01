@@ -1,0 +1,17 @@
+<OAuthV2 async="false" continueOnError="false" enabled="true" name="OA-Generate-Code">
+    <Operation>GenerateAuthorizationCode</Operation>
+    <ExpiresIn>60000</ExpiresIn>
+    <ClientId>session.client_id</ClientId>
+    <ResponseType>session.response_type</ResponseType>
+    <RedirectUri>session.redirect_uri</RedirectUri>
+    <Scope>session.scope</Scope>
+    <State>session.state</State>
+    <Attributes>
+        <Attribute name="sub" ref="jwt.VJ-Id-Token.claim.subject" display="false"/>
+        <Attribute name="code_challenge" ref="session.code_challenge" display="false"/>
+        <Attribute name="code_challenge_method" ref="session.code_challenge_method" display="false"/>
+        <Attribute name="nonce" ref="session.nonce" display="false"/>
+        <Attribute name="idp_access_token" ref="private.idp.access_token" display="false"/>
+    </Attributes>
+    <GenerateResponse enabled="false"/>
+</OAuthV2>

@@ -1,0 +1,9 @@
+<RaiseFault async="false" continueOnError="false" enabled="true" name="RF-Invalid-State">
+    <FaultResponse>
+        <Set>
+            <StatusCode>400</StatusCode>
+            <Payload contentType="application/json">{"error": "invalid_request", "error_description": "Unknown or expired state"}</Payload>
+        </Set>
+    </FaultResponse>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</RaiseFault>

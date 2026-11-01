@@ -1,0 +1,7 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Introspect-Inactive">
+    <Set>
+        <Payload contentType="application/json">{"active": false}</Payload>
+        <StatusCode>200</StatusCode>
+    </Set>
+    <AssignTo createNew="true" transport="http" type="response"/>
+</AssignMessage>

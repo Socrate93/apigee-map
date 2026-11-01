@@ -1,0 +1,15 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Route-Jwks">
+    <AssignVariable>
+        <Name>route.to.idp</Name>
+        <Value>true</Value>
+    </AssignVariable>
+    <AssignVariable>
+        <Name>idp.path</Name>
+        <Value>/jwks</Value>
+    </AssignVariable>
+    <AssignVariable>
+        <Name>target.copy.pathsuffix</Name>
+        <Value>false</Value>
+    </AssignVariable>
+    <IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>
+</AssignMessage>

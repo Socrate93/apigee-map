@@ -1,0 +1,8 @@
+<JSONToXML async="false" continueOnError="false" enabled="true" name="J2X-Userinfo">
+    <Source>response</Source>
+    <OutputVariable>response</OutputVariable>
+    <Options>
+        <ObjectRootElementName>UserInfo</ObjectRootElementName>
+        <NullValue>NULL</NullValue>
+    </Options>
+</JSONToXML>

@@ -1,0 +1,4 @@
+<OAuthV2 async="false" continueOnError="false" enabled="true" name="OA-Verify-Bearer">
+    <Operation>VerifyAccessToken</Operation>
+    <Scope>openid</Scope>
+</OAuthV2>

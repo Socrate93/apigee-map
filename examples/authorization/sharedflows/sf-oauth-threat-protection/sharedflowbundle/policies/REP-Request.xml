@@ -1,0 +1,13 @@
+<RegularExpressionProtection async="false" continueOnError="false" enabled="true" name="REP-Request">
+    <Source>request</Source>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+    <QueryParam name="redirect_uri">
+        <Pattern>(?i)(javascript|data):</Pattern>
+    </QueryParam>
+    <QueryParam name="scope">
+        <Pattern>[&lt;&gt;'";]</Pattern>
+    </QueryParam>
+    <FormParam name="username">
+        <Pattern>[*()\\|&amp;=]</Pattern>
+    </FormParam>
+</RegularExpressionProtection>

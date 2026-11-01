@@ -1,0 +1,12 @@
+<PopulateCache async="false" continueOnError="false" enabled="true" name="PC-Authorize-Session">
+    <CacheKey>
+        <Prefix>authorize-session</Prefix>
+        <KeyFragment ref="session.broker_state"/>
+    </CacheKey>
+    <CacheResource>oauth-cache</CacheResource>
+    <Scope>Environment</Scope>
+    <ExpirySettings>
+        <TimeoutInSec>300</TimeoutInSec>
+    </ExpirySettings>
+    <Source>session.json</Source>
+</PopulateCache>

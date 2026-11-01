@@ -1,0 +1,11 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Redirect-To-Idp">
+    <Set>
+        <StatusCode>302</StatusCode>
+        <ReasonPhrase>Found</ReasonPhrase>
+        <Headers>
+            <Header name="Location">{idp.authorize_url}?response_type=code&amp;client_id={private.idp.client_id}&amp;redirect_uri={idp.callback_url}&amp;scope=openid%20profile%20email&amp;state={session.broker_state}&amp;nonce={session.nonce}</Header>
+        </Headers>
+    </Set>
+    <AssignTo createNew="true" transport="http" type="response"/>
+    <IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>
+</AssignMessage>

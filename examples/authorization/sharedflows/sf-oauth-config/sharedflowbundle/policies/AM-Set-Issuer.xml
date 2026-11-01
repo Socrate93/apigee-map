@@ -1,0 +1,7 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Set-Issuer">
+    <AssignVariable>
+        <Name>oauth.issuer</Name>
+        <Template>https://{request.header.host}{proxy.basepath}</Template>
+    </AssignVariable>
+    <IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>
+</AssignMessage>

@@ -1,0 +1,7 @@
+<VerifyJWS async="false" continueOnError="false" enabled="true" name="VJWS-Request-Object">
+    <Algorithm>RS256</Algorithm>
+    <Source>request.queryparam.request</Source>
+    <PublicKey>
+        <JWKS ref="app.request_object_jwks"/>
+    </PublicKey>
+</VerifyJWS>

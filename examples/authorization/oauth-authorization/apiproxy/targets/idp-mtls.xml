@@ -1,0 +1,48 @@
+<TargetEndpoint name="idp-mtls">
+    <PreFlow name="PreFlow">
+        <Request>
+            <Step><Name>CRL-Idp</Name></Step>
+            <Step><Name>AM-Idp-Headers</Name></Step>
+        </Request>
+        <Response>
+            <Step><Name>CRL-Idp</Name></Step>
+        </Response>
+    </PreFlow>
+    <FaultRules>
+        <FaultRule name="idp-down">
+            <Condition>fault.name = "ServiceUnavailable"</Condition>
+            <Step><Name>AM-Error-Temporarily-Unavailable</Name></Step>
+        </FaultRule>
+    </FaultRules>
+    <DefaultFaultRule name="idp-error">
+        <AlwaysEnforce>true</AlwaysEnforce>
+        <Step><Name>CRL-Idp</Name></Step>
+    </DefaultFaultRule>
+    <HTTPTargetConnection>
+        <Properties>
+            <Property name="connect.timeout.millis">2000</Property>
+            <Property name="io.timeout.millis">5000</Property>
+        </Properties>
+        <LoadBalancer>
+            <Algorithm>RoundRobin</Algorithm>
+            <MaxFailures>3</MaxFailures>
+            <Server name="idp-server-1"/>
+            <Server name="idp-server-2">
+                <IsFallback>true</IsFallback>
+            </Server>
+        </LoadBalancer>
+        <Path>{idp.path}</Path>
+        <SSLInfo>
+            <Enabled>true</Enabled>
+            <ClientAuthEnabled>true</ClientAuthEnabled>
+            <KeyStore>ref://idp-client-keystore-ref</KeyStore>
+            <KeyAlias>idp-client</KeyAlias>
+            <TrustStore>ref://idp-truststore-ref</TrustStore>
+            <IgnoreValidationErrors>false</IgnoreValidationErrors>
+            <Ciphers/>
+            <Protocols>
+                <Protocol>TLSv1.2</Protocol>
+            </Protocols>
+        </SSLInfo>
+    </HTTPTargetConnection>
+</TargetEndpoint>

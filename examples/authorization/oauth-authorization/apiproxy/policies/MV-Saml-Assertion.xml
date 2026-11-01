@@ -1,0 +1,5 @@
+<MessageValidation async="false" continueOnError="false" enabled="true" name="MV-Saml-Assertion">
+    <Source>samlRequest</Source>
+    <ResourceURL>xsd://saml-assertion.xsd</ResourceURL>
+    <SOAPMessage/>
+</MessageValidation>

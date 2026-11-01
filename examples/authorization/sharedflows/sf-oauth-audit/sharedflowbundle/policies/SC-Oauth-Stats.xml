@@ -1,0 +1,6 @@
+<StatisticsCollector async="false" continueOnError="true" enabled="true" name="SC-Oauth-Stats">
+    <Statistics>
+        <Statistic name="oauth_grant" ref="token.grant_type" type="string">none</Statistic>
+        <Statistic name="oauth_client" ref="client.id" type="string">none</Statistic>
+    </Statistics>
+</StatisticsCollector>

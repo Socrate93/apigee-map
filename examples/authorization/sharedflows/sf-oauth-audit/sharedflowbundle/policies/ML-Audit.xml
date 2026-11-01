@@ -1,0 +1,13 @@
+<MessageLogging async="true" continueOnError="true" enabled="true" name="ML-Audit">
+    <Syslog>
+        <Message>oauth {organization.name}/{environment.name} {messageid} flow={current.flow.name} grant={token.grant_type} client={client.id} status={response.status.code}</Message>
+        <Host>audit.internal.example.com</Host>
+        <Port>6514</Port>
+        <Protocol>TCP</Protocol>
+        <SSLInfo>
+            <Enabled>true</Enabled>
+            <TrustStore>ref://audit-truststore-ref</TrustStore>
+        </SSLInfo>
+    </Syslog>
+    <logLevel>INFO</logLevel>
+</MessageLogging>

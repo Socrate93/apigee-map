@@ -1,0 +1,29 @@
+<SharedFlow name="default">
+    <Step><Name>EV-Client-Assertion</Name></Step>
+    <Step>
+        <Name>BA-Decode-Client</Name>
+        <Condition>client.assertion = null</Condition>
+    </Step>
+    <Step>
+        <Name>DJ-Client-Assertion</Name>
+        <Condition>client.assertion != null</Condition>
+    </Step>
+    <Step>
+        <Name>AM-Client-From-Assertion</Name>
+        <Condition>client.assertion != null</Condition>
+    </Step>
+    <Step><Name>AE-Client-App</Name></Step>
+    <Step><Name>EV-Client-Secret</Name></Step>
+    <Step>
+        <Name>VJ-Client-Assertion</Name>
+        <Condition>client.assertion != null</Condition>
+    </Step>
+    <Step>
+        <Name>JS-Check-Secret</Name>
+        <Condition>client.assertion = null</Condition>
+    </Step>
+    <Step>
+        <Name>RF-Invalid-Client</Name>
+        <Condition>client.authenticated != true</Condition>
+    </Step>
+</SharedFlow>

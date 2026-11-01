@@ -1,0 +1,4 @@
+<OAuthV2 async="false" continueOnError="true" enabled="true" name="OA-Verify-Param">
+    <Operation>VerifyAccessToken</Operation>
+    <AccessToken>param.token</AccessToken>
+</OAuthV2>

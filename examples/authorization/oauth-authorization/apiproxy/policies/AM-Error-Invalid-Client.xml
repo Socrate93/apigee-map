@@ -1,0 +1,8 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Error-Invalid-Client">
+    <Set>
+        <StatusCode>401</StatusCode>
+        <Payload contentType="application/json">{"error": "invalid_client", "error_description": "Client authentication failed"}</Payload>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="response"/>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>

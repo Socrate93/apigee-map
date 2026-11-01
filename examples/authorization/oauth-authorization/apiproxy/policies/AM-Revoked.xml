@@ -1,0 +1,7 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Revoked">
+    <Set>
+        <StatusCode>200</StatusCode>
+        <Payload contentType="application/json">{}</Payload>
+    </Set>
+    <AssignTo createNew="true" transport="http" type="response"/>
+</AssignMessage>

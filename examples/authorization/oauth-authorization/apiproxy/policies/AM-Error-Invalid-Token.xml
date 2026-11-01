@@ -1,0 +1,8 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Error-Invalid-Token">
+    <Set>
+        <StatusCode>401</StatusCode>
+        <Payload contentType="application/json">{"error": "invalid_token", "error_description": "The access token is invalid or expired"}</Payload>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="response"/>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>

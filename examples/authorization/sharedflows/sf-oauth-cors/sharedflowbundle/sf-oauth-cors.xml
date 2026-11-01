@@ -1,0 +1,4 @@
+<SharedFlowBundle revision="4" name="sf-oauth-cors">
+    <DisplayName>sf-oauth-cors</DisplayName>
+    <Description>Answers cross-origin calls from the allowed origins, Edge having no CORS policy</Description>
+</SharedFlowBundle>

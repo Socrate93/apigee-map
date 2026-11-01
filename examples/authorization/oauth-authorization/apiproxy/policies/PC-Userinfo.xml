@@ -1,0 +1,12 @@
+<PopulateCache async="false" continueOnError="true" enabled="true" name="PC-Userinfo">
+    <CacheKey>
+        <Prefix>userinfo</Prefix>
+        <KeyFragment ref="access_token"/>
+    </CacheKey>
+    <CacheResource>oauth-cache</CacheResource>
+    <Scope>Environment</Scope>
+    <ExpirySettings>
+        <TimeoutInSec>120</TimeoutInSec>
+    </ExpirySettings>
+    <Source>response.content</Source>
+</PopulateCache>

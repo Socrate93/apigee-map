@@ -1,0 +1,8 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Introspect-Active">
+    <Set>
+        <Payload contentType="application/json" variablePrefix="@" variableSuffix="#">{"active": true, "client_id": "@oauthv2accesstoken.GOI-Param-Token.client_id#", "scope": "@oauthv2accesstoken.GOI-Param-Token.scope#", "exp": @oauthv2accesstoken.GOI-Param-Token.expires_in#, "sub": "@oauthv2accesstoken.GOI-Param-Token.accesstoken.sub#"}</Payload>
+        <StatusCode>200</StatusCode>
+    </Set>
+    <AssignTo createNew="true" transport="http" type="response"/>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>

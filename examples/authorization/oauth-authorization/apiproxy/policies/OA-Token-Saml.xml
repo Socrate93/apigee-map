@@ -1,0 +1,14 @@
+<OAuthV2 async="false" continueOnError="false" enabled="true" name="OA-Token-Saml">
+    <Operation>GenerateAccessToken</Operation>
+    <ExpiresIn>1800000</ExpiresIn>
+    <RefreshTokenExpiresIn>2592000000</RefreshTokenExpiresIn>
+    <SupportedGrantTypes>
+        <GrantType>client_credentials</GrantType>
+    </SupportedGrantTypes>
+    <GrantType>saml.flow_type</GrantType>
+    <Attributes>
+        <Attribute name="sub" ref="saml.subject" display="true"/>
+        <Attribute name="saml_issuer" ref="saml.issuer" display="false"/>
+    </Attributes>
+    <GenerateResponse enabled="true"/>
+</OAuthV2>

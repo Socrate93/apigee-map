@@ -1,0 +1,21 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Route-Userinfo">
+    <AssignVariable>
+        <Name>route.to.idp</Name>
+        <Value>true</Value>
+    </AssignVariable>
+    <AssignVariable>
+        <Name>idp.path</Name>
+        <Value>/userinfo</Value>
+    </AssignVariable>
+    <AssignVariable>
+        <Name>target.copy.pathsuffix</Name>
+        <Value>false</Value>
+    </AssignVariable>
+    <Set>
+        <Headers>
+            <Header name="Authorization">Bearer {oauthv2accesstoken.GOI-Bearer.accesstoken.idp_access_token}</Header>
+        </Headers>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="request"/>
+    <IgnoreUnresolvedVariables>false</IgnoreUnresolvedVariables>
+</AssignMessage>

@@ -1,0 +1,12 @@
+<SharedFlow name="default">
+    <Step><Name>SA-Global</Name></Step>
+    <Step><Name>REP-Request</Name></Step>
+    <Step>
+        <Name>JTP-Body</Name>
+        <Condition>request.header.Content-Type = "application/json"</Condition>
+    </Step>
+    <Step>
+        <Name>XTP-Body</Name>
+        <Condition>(request.header.Content-Type = "application/xml") or (request.formparam.assertion != null)</Condition>
+    </Step>
+</SharedFlow>

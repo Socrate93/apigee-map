@@ -1,0 +1,4 @@
+<SharedFlowBundle revision="4" name="sf-oauth-client-auth">
+    <DisplayName>sf-oauth-client-auth</DisplayName>
+    <Description>Authenticates a confidential client from Basic credentials or a JWT assertion</Description>
+</SharedFlowBundle>

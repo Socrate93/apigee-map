@@ -1,0 +1,8 @@
+<ExtractVariables async="false" continueOnError="false" enabled="true" name="EV-Callback-Params">
+    <Source>request</Source>
+    <VariablePrefix>callback</VariablePrefix>
+    <QueryParam name="code"><Pattern ignoreCase="false">{code}</Pattern></QueryParam>
+    <QueryParam name="state"><Pattern ignoreCase="false">{state}</Pattern></QueryParam>
+    <QueryParam name="error"><Pattern ignoreCase="false">{error}</Pattern></QueryParam>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</ExtractVariables>

@@ -1,0 +1,3 @@
+<FlowCallout async="false" continueOnError="false" enabled="true" name="FC-Client-Auth">
+    <SharedFlowBundle>sf-oauth-client-auth</SharedFlowBundle>
+</FlowCallout>

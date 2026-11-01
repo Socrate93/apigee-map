@@ -1,0 +1,10 @@
+<KeyValueMapOperations async="false" continueOnError="false" enabled="true" name="KVM-Get-Idp" mapIdentifier="oauth-idp">
+    <Scope>environment</Scope>
+    <ExpiryTimeInSecs>300</ExpiryTimeInSecs>
+    <Get assignTo="idp.authorize_url"><Key><Parameter>authorize_url</Parameter></Key></Get>
+    <Get assignTo="idp.callback_url"><Key><Parameter>callback_url</Parameter></Key></Get>
+    <Get assignTo="idp.issuer"><Key><Parameter>issuer</Parameter></Key></Get>
+    <Get assignTo="idp.jwks_uri"><Key><Parameter>jwks_uri</Parameter></Key></Get>
+    <Get assignTo="idp.transport"><Key><Parameter>transport</Parameter></Key></Get>
+    <Get assignTo="idp.client_auth"><Key><Parameter>client_auth</Parameter></Key></Get>
+</KeyValueMapOperations>

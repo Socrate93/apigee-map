@@ -1,0 +1,9 @@
+<LookupCache async="false" continueOnError="false" enabled="true" name="LC-Userinfo">
+    <CacheKey>
+        <Prefix>userinfo</Prefix>
+        <KeyFragment ref="access_token"/>
+    </CacheKey>
+    <CacheResource>oauth-cache</CacheResource>
+    <Scope>Environment</Scope>
+    <AssignTo>userinfo.json</AssignTo>
+</LookupCache>

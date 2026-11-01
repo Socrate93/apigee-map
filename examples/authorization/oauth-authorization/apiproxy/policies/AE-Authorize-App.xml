@@ -1,0 +1,5 @@
+<AccessEntity async="false" continueOnError="false" enabled="true" name="AE-Authorize-App">
+    <EntityType value="app"/>
+    <EntityIdentifier ref="verifyapikey.VA-Authorize-Client.client_id" type="consumerkey"/>
+    <SecondaryIdentifier/>
+</AccessEntity>

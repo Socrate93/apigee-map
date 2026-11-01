@@ -1,0 +1,9 @@
+<RaiseFault async="false" continueOnError="false" enabled="true" name="RF-Not-Found">
+    <FaultResponse>
+        <Set>
+            <StatusCode>404</StatusCode>
+            <Payload contentType="application/json">{"error": "not_found", "error_description": "Unknown endpoint"}</Payload>
+        </Set>
+    </FaultResponse>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</RaiseFault>

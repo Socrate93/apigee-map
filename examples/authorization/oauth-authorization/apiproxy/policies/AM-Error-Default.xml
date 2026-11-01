@@ -1,0 +1,8 @@
+<AssignMessage async="false" continueOnError="false" enabled="true" name="AM-Error-Default">
+    <Set>
+        <StatusCode>500</StatusCode>
+        <Payload contentType="application/json">{"error": "server_error", "error_description": "The request could not be processed"}</Payload>
+    </Set>
+    <AssignTo createNew="false" transport="http" type="response"/>
+    <IgnoreUnresolvedVariables>true</IgnoreUnresolvedVariables>
+</AssignMessage>

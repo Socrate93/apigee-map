@@ -1,0 +1,11 @@
+<OASValidation async="false" continueOnError="false" enabled="true" name="OAS-Token">
+    <OASResource>oas://token.yaml</OASResource>
+    <Source>request</Source>
+    <Options>
+        <ValidateMessageBody>false</ValidateMessageBody>
+        <AllowUnspecifiedParameters>
+            <Header>true</Header>
+            <Query>false</Query>
+        </AllowUnspecifiedParameters>
+    </Options>
+</OASValidation>

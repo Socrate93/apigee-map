@@ -1,0 +1,3 @@
+<DeleteOAuthV2Info async="false" continueOnError="true" enabled="true" name="DOI-Code">
+    <AuthorizationCode ref="token.code"/>
+</DeleteOAuthV2Info>
